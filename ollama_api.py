@@ -26,7 +26,8 @@ def warmup_model():
             messages=[
                 {"role": "system", "content": "You are a lawyer. Only answer legal questions. Politely refuse any question that is not related to law."},
                 {"role": "user", "content": "Hello"}
-            ]
+            ],
+            max_tokens=150
         )
         print("Model warmup complete!")
     except Exception as e:
@@ -58,7 +59,8 @@ def ask_model():
         messages=[
             {"role": "system", "content": "You are a lawyer. Only answer legal questions. Politely refuse any question that is not related to law."},
             {"role": "user", "content": query}
-        ]
+        ],
+        max_tokens=150
     )
 
     # Cache the result
