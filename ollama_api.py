@@ -35,7 +35,7 @@ DOCUMENT_URLS = [
 ]  # Add as many landing pages as needed
 TOP_K = 3  # Number of most relevant document chunks to use
 CACHE = {}
-prompt = ""  # default empty
+prompt = "i dont know"  # default empty
 
 # ----------------- Logging -----------------
 logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(message)s")
@@ -152,6 +152,7 @@ def ask_model():
     # Retrieve relevant document chunks
     if not relevant_docs or all(len(doc.strip()) == 0 for doc in relevant_docs):
     # No relevant info — return immediately
+        prompt = "i dont know"
         answer = "I’m sorry, I don’t have enough information to answer that."
     else:
         # Construct prompt only when we have relevant docs
