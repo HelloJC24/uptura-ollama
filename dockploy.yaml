@@ -1,14 +1,14 @@
-# app:
-#   name: ollama-api
-#   type: docker
-#   ports:
-#     - "5000:5000"
-#   network_mode: "host"
-#   env:
-#     - name: FLASK_ENV
-#       value: production
-services:
-  flaskapi:
-    build: .
-    network_mode: host
-    command: python ollama_api.py
+app:
+  name: ollama-api
+  type: docker
+  ports:
+    - "5000:5000"
+  network_mode: "host"
+  env:
+    - name: FLASK_ENV
+      value: production
+# services:
+#   flaskapi:
+#     build: .
+#     network_mode: host
+#     command: python ollama_api.py
