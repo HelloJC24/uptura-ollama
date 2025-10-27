@@ -5,7 +5,9 @@ app = Flask(__name__)
 
 # Connect to Ollama running on the host
 OLLAMA_URL = "http://host.docker.internal:11434"
-ollama = Client(host=OLLAMA_URL)  # must assign to variable
+ollama = Client(host='http://127.0.0.1:11434')
+
+#ollama = Client(host=OLLAMA_URL)  # must assign to variable
 
 @app.route('/ask', methods=['POST'])
 def ask_model():
