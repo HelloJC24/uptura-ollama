@@ -165,81 +165,30 @@ def ask_model():
     query_emb = get_embedding( normalize_text(query))
     relevant_docs = retrieve_relevant_chunks(query_emb)
 
-    if not relevant_docs:
+    # Retrieve relevant document chunks
+    if not relevant_docs or all(len(doc.strip()) == 0 for doc in relevant_docs):
+    # No relevant info — return immediately
+        prompt = "i dont know"
         answer = "I’m sorry, I don’t have enough information to answer that."
-        CACHE[key] = answer
-        def no_info_gen():
-            yield json.dumps({"answer": answer}) + "\n"
-        return Response(no_info_gen(), mimetype="application/json")
+    else:
+        # Construct prompt only when we have relevant docs
+        prompt = SYSTEM_PROMPT + "\n\n" + "\n---\n".join(relevant_docs)
+        prompt += f"\n\nUser: {query}\nAnswer:"
 
-     # Build messages
-    separator = "\n---\n"
-    messages = [
-        {"role": "system", "content": SYSTEM_PROMPT.strip()},
-        {"role": "user", "content": "Context:\n" + separator.join(relevant_docs)},
-        {"role": "user", "content": query}
-    ]
-
-    def generate():
+        # Call Ollama
+        # Call Ollama safely
         try:
-            full_answer = ""
-            for event in ollama.chat(model=OLLAMA_MODEL, messages=messages, stream=True):
-                if "message" in event and "content" in event["message"]:
-                    token = event["message"]["content"]
-                    full_answer += token
-                    yield json.dumps({"answer": token}) + "\n"
-            # Cache final answer after streaming
-            CACHE[key] = full_answer
+            response = ollama.chat(
+                model=OLLAMA_MODEL,
+                messages=[{"role": "system", "content": prompt}]
+            )
+            answer = response['message']['content']
         except Exception as e:
-            logging.error(f"Ollama streaming failed: {e}")
-            yield json.dumps({"error": str(e)}) + "\n"
-
-    # Ensure Flask doesn't buffer
-    return Response(generate(), mimetype="application/json", direct_passthrough=True)
-
-
-    # separator = "\n---\n"
-    # messages = [
-    #     {"role": "system", "content": SYSTEM_PROMPT.strip()},
-    #     {"role": "user", "content": f"Context:\n{separator.join(relevant_docs)}"},
-    #     {"role": "user", "content": query}
-    # ]
-
-
-    # # If no relevant docs, respond immediately
-    # if not relevant_docs:
-    #     return Response(stream_response(["I’m sorry, I don’t have enough information to answer that."]),
-    #                     mimetype="application/json")
-    
-    # # Stream Ollama output in real time
-    # return Response(generate_streaming_response(messages), mimetype="application/json")
-
-
-    # # Retrieve relevant document chunks
-    # if not relevant_docs or all(len(doc.strip()) == 0 for doc in relevant_docs):
-    # # No relevant info — return immediately
-    #     prompt = "i dont know"
-    #     answer = "I’m sorry, I don’t have enough information to answer that."
-    # else:
-    #     # Construct prompt only when we have relevant docs
-    #     prompt = SYSTEM_PROMPT + "\n\n" + "\n---\n".join(relevant_docs)
-    #     prompt += f"\n\nUser: {query}\nAnswer:"
-
-    #     # Call Ollama
-    #     # Call Ollama safely
-    #     try:
-    #         response = ollama.chat(
-    #             model=OLLAMA_MODEL,
-    #             messages=[{"role": "system", "content": prompt}],
-    #             max_tokens=100
-    #         )
-    #         answer = response['message']['content']
-    #     except Exception as e:
-    #         logging.error(f"Ollama call failed: {e}")
-    #         answer = "Error: Failed to generate response."
-    # Cache result
-    #CACHE[key] = answer
-    #return Response(stream_response([answer]), mimetype="application/json")
+            logging.error(f"Ollama call failed: {e}")
+            answer = "Error: Failed to generate response."
+    #Cache result
+    CACHE[key] = answer
+    return Response(stream_response([answer]), mimetype="application/json")
 
 # ----------------- Run App -----------------
 if __name__ == "__main__":
