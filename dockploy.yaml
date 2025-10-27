@@ -3,8 +3,7 @@ app:
   type: docker
   ports:
     - "5000:5000"
-  extra_hosts:
-    - "host.docker.internal:host-gateway"
+  network_mode: "host"
   env:
     - name: FLASK_ENV
       value: production
