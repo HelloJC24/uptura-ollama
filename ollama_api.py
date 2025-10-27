@@ -151,7 +151,7 @@ def ask_model():
     # Retrieve relevant document chunks
     if not relevant_docs or all(len(doc.strip()) == 0 for doc in relevant_docs):
     # No relevant info — return immediately
-    answer = "I’m sorry, I don’t have enough information to answer that."
+        answer = "I’m sorry, I don’t have enough information to answer that."
     else:
         # Construct prompt only when we have relevant docs
         prompt = SYSTEM_PROMPT + "\n\n" + "\n---\n".join(relevant_docs)
