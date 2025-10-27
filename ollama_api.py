@@ -3,7 +3,9 @@ from ollama import Client
 
 app = Flask(__name__)
 #ollama = Client(host='http://127.0.0.1:11434')
-ollama = Client(host='http://host.docker.internal:11434')
+#ollama = Client(host='http://host.docker.internal:11434')
+OLLAMA_URL = "http://host.docker.internal:11434"  # use host gateway
+ollama.Client(host=OLLAMA_URL)
 
 @app.route('/ask', methods=['POST'])
 def ask_model():
