@@ -69,7 +69,7 @@ def normalize_text(text):
 
 def generate_streaming_response(messages):
     try:
-        stream = ollama.chat(model=OLLAMA_MODEL, messages=messages, stream=True, max_tokens=100)
+        stream = ollama.chat(model=OLLAMA_MODEL, messages=messages, stream=True)
         for chunk in stream:
             if "message" in chunk and "content" in chunk["message"]:
                 yield json.dumps({"answer": chunk["message"]["content"]}) + "\n"
