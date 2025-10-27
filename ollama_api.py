@@ -107,7 +107,8 @@ def ask_model():
         return Response(stream_response([CACHE[key]]), mimetype="application/json")
 
     # 1️⃣ Embed the query
-    query_emb = ollama.embed(model=model, input=query)['embedding']
+    #query_emb = ollama.embed(model=model, input=query)['embedding']
+    query_emb = get_embedding(query)
 
     # 2️⃣ Retrieve relevant chunks from Redis
     relevant_chunks = retrieve_relevant_chunks(query_emb)
