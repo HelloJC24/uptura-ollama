@@ -160,11 +160,13 @@ def ask_model():
     query_emb = get_embedding( normalize_text(query))
     relevant_docs = retrieve_relevant_chunks(query_emb)
 
+    separator = "\n---\n"
     messages = [
-    {"role": "system", "content": SYSTEM_PROMPT.strip()},
-    {"role": "user", "content": f"Context:\n{'\n---\n'.join(relevant_docs)}"},
-    {"role": "user", "content": query}
+        {"role": "system", "content": SYSTEM_PROMPT.strip()},
+        {"role": "user", "content": f"Context:\n{separator.join(relevant_docs)}"},
+        {"role": "user", "content": query}
     ]
+
 
     # If no relevant docs, respond immediately
     if not relevant_docs:
