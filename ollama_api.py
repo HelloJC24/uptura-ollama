@@ -147,6 +147,7 @@ def ask_model():
         
     # Embed query
     query_emb = get_embedding( normalize_text(query))
+    relevant_docs = retrieve_relevant_chunks(query_emb)
 
     # Retrieve relevant document chunks
     if not relevant_docs or all(len(doc.strip()) == 0 for doc in relevant_docs):
