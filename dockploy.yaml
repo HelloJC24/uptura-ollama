@@ -4,8 +4,9 @@ app:
   env:
     - name: FLASK_ENV
       value: production
+    - name: OLLAMA_HOST
+      value: http://host.docker.internal:11434  
   ports:
     - "5000:5000"
-  network_mode: "host"
   extra_hosts:
-  - "host.docker.internal:host-gateway"
+    - "host.docker.internal:host-gateway"
