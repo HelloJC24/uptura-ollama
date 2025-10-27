@@ -4,7 +4,8 @@ from ollama import Client
 app = Flask(__name__)
 
 # Use the host machine's IP (since verified reachable)
-OLLAMA_URL = "http://72.60.43.106:11434"
+#OLLAMA_URL = "http://72.60.43.106:11434"
+OLLAMA_URL = "http://localhost:11434"
 ollama = Client(host=OLLAMA_URL)
 
 @app.route('/ask', methods=['POST'])
