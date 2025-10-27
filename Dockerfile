@@ -22,7 +22,7 @@ CMD ["python", "ollama_api.py"]
 # COPY requirements.txt .
 # RUN pip install --no-cache-dir -r requirements.txt
 
-COPY ollama_api.py .
+# COPY ollama_api.py .
 
-EXPOSE 5000
-CMD ["gunicorn", "-b", "0.0.0.0:5000", "ollama_api:app"]
+# EXPOSE 5000
+# CMD ["gunicorn", "-b", "0.0.0.0:5000", "ollama_api:app"]
