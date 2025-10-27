@@ -199,10 +199,9 @@ def ask_model():
     #     except Exception as e:
     #         logging.error(f"Ollama call failed: {e}")
     #         answer = "Error: Failed to generate response."
-
     # Cache result
-    CACHE[key] = answer
-    return Response(stream_response([answer]), mimetype="application/json")
+    #CACHE[key] = answer
+    #return Response(stream_response([answer]), mimetype="application/json")
 
 # ----------------- Run App -----------------
 if __name__ == "__main__":
