@@ -2,3 +2,8 @@ flask
 ollama
 chromadb
 redis
+Flask
+requests
+beautifulsoup4
+numpy
+
