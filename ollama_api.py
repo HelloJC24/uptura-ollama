@@ -19,7 +19,12 @@ OLLAMA_HOST = "http://72.60.43.106:11434"  # Your Ollama host
 OLLAMA_MODEL = "phi3:mini"
 REDIS_HOST = "bngcpython-aiknow-myaa28"
 REDIS_PORT = 6379
-SYSTEM_PROMPT = "You are a legal assistant. Only answer questions related to your knowledge based. Ignore unrelated queries."
+# SYSTEM_PROMPT = "You are a legal assistant. Only answer questions related to your knowledge based. Ignore unrelated queries."
+SYSTEM_PROMPT = """
+You are a legal assistant. Only answer questions based on the information provided in the retrieved documents.
+If the answer is not in the documents, respond with: "I’m sorry, I don’t have enough information to answer that."
+Do not generate answers from your own knowledge or external sources.
+"""
 DOCUMENT_URLS = [
     "https://thebngc.com",
     "https://gogel.thebngc.com",
@@ -125,9 +130,12 @@ def ask_model():
 
     # Retrieve relevant document chunks
     relevant_docs = retrieve_relevant_chunks(query_emb)
-    prompt = SYSTEM_PROMPT + "\n\n"
-    prompt += "\n---\n".join(relevant_docs)
-    prompt += f"\n\nUser: {query}\nAnswer:"
+    if not relevant_docs or all(len(doc.strip()) == 0 for doc in relevant_docs):
+        answer = "I’m sorry, I don’t have enough information to answer that."
+    else:
+        prompt = SYSTEM_PROMPT + "\n\n"
+        prompt += "\n---\n".join(relevant_docs)
+        prompt += f"\n\nUser: {query}\nAnswer:"
 
     # Call Ollama
     try:
