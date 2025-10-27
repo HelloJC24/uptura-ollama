@@ -7,8 +7,9 @@ comprehensive logging, performance optimization, and configurable streaming.
 import threading
 import time
 import logging
+import json
 from typing import Dict, Any, Optional
-from flask import Flask, request, jsonify
+from flask import Flask, request, jsonify, Response
 
 # Import our improved modules
 from config import Config
@@ -212,6 +213,100 @@ def ask_model():
     
     except Exception as e:
         logger.error(f"Error processing request: {e}", exc_info=True)
+        performance_monitor.record_request(time.time() - start_time, cache_hit=False, error=True)
+        return ResponseFormatter.format_error_response("Internal server error", 500)
+
+@app.route("/stream", methods=["POST"])
+@timing_decorator  
+def stream_model():
+    """Optimized streaming endpoint with Server-Sent Events"""
+    start_time = time.time()
+    user_ip = request.remote_addr
+    
+    try:
+        # Get and validate request data
+        data = request.get_json()
+        if not data:
+            return ResponseFormatter.format_error_response("Invalid JSON in request body")
+        
+        log_request_info(data, user_ip)
+        
+        # Extract and validate query
+        raw_query = data.get("query", "")
+        query = sanitize_text(raw_query)
+        
+        is_valid, error_message = validate_query(query)
+        if not is_valid:
+            return ResponseFormatter.format_error_response(error_message)
+        
+        logger.info(f"Processing streaming query: '{query[:100]}...'")
+        
+        # Check if RAG retriever is ready
+        if not rag_retriever:
+            logger.warning("RAG retriever not initialized")
+            return ResponseFormatter.format_error_response("System is still initializing. Please try again in a moment.", 503)
+        
+        def stream_generator():
+            try:
+                # Send initial status
+                status_msg = json.dumps({'status': 'processing', 'message': 'Retrieving relevant documents...'})
+                yield f"data: {status_msg}\n\n"
+                
+                # Retrieve relevant documents
+                relevant_chunks = rag_retriever.retrieve_relevant_chunks(query)
+                
+                if not relevant_chunks:
+                    no_info_msg = json.dumps({'answer': "I'm sorry, I don't have enough information to answer that question."})
+                    yield f"data: {no_info_msg}\n\n"
+                    complete_msg = json.dumps({'status': 'complete'})
+                    yield f"data: {complete_msg}\n\n"
+                    return
+                
+                # Send status update
+                found_msg = json.dumps({'status': 'generating', 'message': f'Found {len(relevant_chunks)} relevant documents. Generating answer...'})
+                yield f"data: {found_msg}\n\n"
+                
+                # Create context and generate answer
+                context = rag_retriever.create_context(relevant_chunks)
+                answer_generator = ResponseGenerator.generate_answer(query, context, streaming=True)
+                
+                # Stream the answer
+                full_answer = ""
+                for chunk in answer_generator:
+                    full_answer += chunk
+                    chunk_msg = json.dumps({'answer': chunk})
+                    yield f"data: {chunk_msg}\n\n"
+                
+                # Cache and complete
+                query_cache.set(query, full_answer)
+                complete_msg = json.dumps({'status': 'complete'})
+                yield f"data: {complete_msg}\n\n"
+                
+                performance_monitor.record_request(time.time() - start_time, cache_hit=False)
+                
+            except Exception as e:
+                logger.error(f"Error in streaming: {e}")
+                error_msg = json.dumps({'error': f'Streaming error: {str(e)}'})
+                yield f"data: {error_msg}\n\n"
+                performance_monitor.record_request(time.time() - start_time, cache_hit=False, error=True)
+        
+        return Response(
+            stream_generator(),
+            mimetype="text/plain",
+            headers={
+                "Cache-Control": "no-cache, no-store, must-revalidate",
+                "Pragma": "no-cache",
+                "Expires": "0",
+                "Connection": "keep-alive",
+                "X-Accel-Buffering": "no",
+                "Access-Control-Allow-Origin": "*",
+                "Access-Control-Allow-Headers": "Cache-Control, Content-Type",
+                "Content-Type": "text/plain; charset=utf-8"
+            }
+        )
+    
+    except Exception as e:
+        logger.error(f"Error processing streaming request: {e}", exc_info=True)
         performance_monitor.record_request(time.time() - start_time, cache_hit=False, error=True)
         return ResponseFormatter.format_error_response("Internal server error", 500)
 

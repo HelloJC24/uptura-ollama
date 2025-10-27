@@ -120,35 +120,57 @@ class ResponseFormatter:
     
     @staticmethod
     def format_streaming_response(content_generator: Generator[str, None, None]) -> Response:
-        """Format streaming response for Flask"""
+        """Format streaming response for Flask with proper SSE headers"""
         def generate():
             try:
+                # Send initial connection confirmation
+                yield "data: " + json.dumps({"status": "connected"}) + "\n\n"
+                
                 for content in content_generator:
                     if content:  # Only send non-empty content
                         response_chunk = {"answer": content}
-                        yield json.dumps(response_chunk) + "\n"
+                        yield "data: " + json.dumps(response_chunk) + "\n\n"
+                
+                # Send completion signal
+                yield "data: " + json.dumps({"status": "complete"}) + "\n\n"
+                
             except Exception as e:
                 logger.error(f"Error in streaming response: {e}")
                 error_response = {"error": f"Streaming error: {str(e)}"}
-                yield json.dumps(error_response) + "\n"
+                yield "data: " + json.dumps(error_response) + "\n\n"
         
         return Response(
             generate(),
-            mimetype="application/json",
-            headers={"Cache-Control": "no-cache"}
+            mimetype="text/plain",
+            headers={
+                "Cache-Control": "no-cache",
+                "Connection": "keep-alive",
+                "X-Accel-Buffering": "no",  # Disable Nginx buffering
+                "Access-Control-Allow-Origin": "*",
+                "Access-Control-Allow-Headers": "Cache-Control"
+            }
         )
     
     @staticmethod
     def format_direct_response(answer: str) -> Response:
         """Format direct response for Flask"""
         def generate():
+            # Send connection confirmation first
+            yield "data: " + json.dumps({"status": "connected"}) + "\n\n"
+            # Send the answer
             response_chunk = {"answer": answer}
-            yield json.dumps(response_chunk) + "\n"
+            yield "data: " + json.dumps(response_chunk) + "\n\n"
+            # Send completion signal
+            yield "data: " + json.dumps({"status": "complete"}) + "\n\n"
         
         return Response(
             generate(),
-            mimetype="application/json",
-            headers={"Cache-Control": "no-cache"}
+            mimetype="text/plain",
+            headers={
+                "Cache-Control": "no-cache",
+                "Connection": "keep-alive",
+                "X-Accel-Buffering": "no"
+            }
         )
     
     @staticmethod

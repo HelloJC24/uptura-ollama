@@ -107,10 +107,77 @@ Ask questions to the RAG system.
 ```
 
 **Response (Streaming):**
-```json
-{"answer": "Partial response chunk"}
-{"answer": " continues here..."}
 ```
+data: {"status": "connected"}
+
+data: {"answer": "Partial response chunk"}
+
+data: {"answer": " continues here..."}
+
+data: {"status": "complete"}
+```
+
+### POST /stream (Optimized for Real-time Streaming)
+Dedicated streaming endpoint with better real-time performance.
+
+**Request:**
+```json
+{
+    "query": "Your question here"
+}
+```
+
+**Response (Server-Sent Events format):**
+```
+data: {"status": "processing", "message": "Retrieving relevant documents..."}
+
+data: {"status": "generating", "message": "Found 3 relevant documents. Generating answer..."}
+
+data: {"answer": "Yes"}
+
+data: {"answer": ","}
+
+data: {"answer": " I"}
+
+data: {"answer": " am"}
+
+data: {"answer": " aware"}
+
+data: {"status": "complete"}
+```
+
+### Testing Streaming in Postman
+1. Use the `/stream` endpoint for best results
+2. In Postman, look for the "Stream" toggle in the response section
+3. You should see responses appear in real-time, not all at once
+4. If responses appear all at once, try using curl instead:
+
+```bash
+curl -X POST http://localhost:5000/stream \
+  -H "Content-Type: application/json" \
+  -d '{"query": "do you know Gogel?"}' \
+  --no-buffer
+```
+
+### Performance Optimization Tips
+1. **Use `.env.fast` configuration** for better performance:
+   ```bash
+   cp .env.fast .env
+   ```
+
+2. **Reduce chunk size and TOP_K** for faster retrieval:
+   ```
+   CHUNK_SIZE=150
+   TOP_K=2
+   MIN_SIMILARITY=0.3
+   ```
+
+3. **Lower logging level** for production:
+   ```
+   LOG_LEVEL=WARNING
+   ```
+
+4. **Use the `/stream` endpoint** instead of `/ask` for real-time streaming
 
 ### GET /health
 Health check endpoint.

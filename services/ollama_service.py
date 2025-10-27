@@ -117,16 +117,24 @@ class OllamaService:
                 options={
                     "temperature": temperature,
                     "top_p": 0.9,
-                    "top_k": 40
+                    "top_k": 40,
+                    "num_predict": -1,  # Generate until natural stop
+                    "num_ctx": 4096,    # Context window
+                    "repeat_penalty": 1.1,
+                    "tfs_z": 1.0
                 }
             )
             
+            # Yield chunks as they arrive
             for chunk in stream:
                 if "message" in chunk and "content" in chunk["message"]:
                     content = chunk["message"]["content"]
                     if content:  # Only yield non-empty content
                         total_chunks += 1
                         yield content
+                        
+                        # Add small delay to prevent overwhelming the client
+                        time.sleep(0.01)  # 10ms delay between chunks
             
             response_time = time.time() - start_time
             logger.info(f"Streaming completed in {response_time:.2f}s, {total_chunks} chunks")
