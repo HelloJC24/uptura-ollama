@@ -101,13 +101,24 @@ threading.Thread(target=warmup_model, daemon=True).start()
 def make_cache_key(query):
     return hashlib.sha256(query.encode()).hexdigest()
 
-def retrieve_relevant_chunks(query_emb, top_k=TOP_K):
+# def retrieve_relevant_chunks(query_emb, top_k=TOP_K):
+#     similarities = []
+#     for chunk in DOC_CHUNKS:
+#         sim = cosine_similarity([query_emb], [chunk["embedding"]])[0][0]
+#         similarities.append(sim)
+#     top_indices = np.argsort(similarities)[-top_k:][::-1]
+#     return [DOC_CHUNKS[i]["text"] for i in top_indices]
+
+def retrieve_relevant_chunks(query_emb, top_k=TOP_K, min_sim=0.5):
     similarities = []
     for chunk in DOC_CHUNKS:
         sim = cosine_similarity([query_emb], [chunk["embedding"]])[0][0]
         similarities.append(sim)
     top_indices = np.argsort(similarities)[-top_k:][::-1]
-    return [DOC_CHUNKS[i]["text"] for i in top_indices]
+    
+    # Only include chunks above similarity threshold
+    return [DOC_CHUNKS[i]["text"] for i in top_indices if similarities[i] >= min_sim]
+
 
 def stream_response(generator):
     for chunk in generator:
@@ -124,7 +135,7 @@ def ask_model():
     key = make_cache_key(query)
     if key in CACHE:
         return Response(stream_response([CACHE[key]]), mimetype="application/json")
-
+        
     # Embed query
     query_emb = get_embedding(query)
 
@@ -139,7 +150,7 @@ def ask_model():
 
     # Call Ollama
     try:
-        response = ollama.chat(model=OLLAMA_MODEL, messages=[{"role": "system", "content": prompt}])
+        response = ollama.chat(model=OLLAMA_MODEL, messages=[{"role": "system", "content": prompt}], MAX_TOKENS=100)
         answer = response['message']['content']
     except Exception as e:
         logging.error(f"Ollama call failed: {e}")
@@ -147,7 +158,6 @@ def ask_model():
 
     # Cache result
     CACHE[key] = answer
-
     return Response(stream_response([answer]), mimetype="application/json")
 
 # ----------------- Run App -----------------
