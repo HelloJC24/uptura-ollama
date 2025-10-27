@@ -6,4 +6,5 @@ Flask
 requests
 beautifulsoup4
 numpy
-
+sentence-transformers
+scikit-learn
