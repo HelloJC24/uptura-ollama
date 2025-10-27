@@ -2,7 +2,8 @@ from flask import Flask, request, jsonify
 from ollama import Client
 
 app = Flask(__name__)
-ollama = Client(host='http://127.0.0.1:11434')
+#ollama = Client(host='http://127.0.0.1:11434')
+ollama = Client(host='http://host.docker.internal:11434')
 
 @app.route('/ask', methods=['POST'])
 def ask_model():
