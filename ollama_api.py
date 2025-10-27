@@ -10,14 +10,21 @@ from bs4 import BeautifulSoup
 import logging
 from sklearn.metrics.pairwise import cosine_similarity
 import numpy as np
+from ollama import Client
 
 # ----------------- Config -----------------
 APP_NAME = "flask_rag_api"
 MODEL_NAME = "all-MiniLM-L6-v2"
+OLLAMA_HOST = "http://72.60.43.106:11434"  # Your Ollama host
+OLLAMA_MODEL = "mistral"
 REDIS_HOST = "bngcpython-aiknow-myaa28"
 REDIS_PORT = 6379
 SYSTEM_PROMPT = "You are a legal assistant. Only answer questions related to your knowledge based. Ignore unrelated queries."
-DOCUMENT_URL = "https://fruitask.com"  # Replace with your landing page URL
+DOCUMENT_URLS = [
+    "https://thebngc.com",
+    "https://gogel.thebngc.com",
+    "https://uptura-tech.com"
+]  # Add as many landing pages as needed
 TOP_K = 3  # Number of most relevant document chunks to use
 CACHE = {}
 
@@ -42,40 +49,46 @@ embed_model = SentenceTransformer(MODEL_NAME)
 def get_embedding(text):
     return embed_model.encode(text).tolist()
 
+# ----------------- Ollama Client -----------------
+ollama = Client(host=OLLAMA_HOST)
+
 # ----------------- Document Fetch & Embed -----------------
 DOC_CHUNKS = []
 
-def fetch_and_store_document():
-    logging.info(f"Fetching content from {DOCUMENT_URL} ...")
-    try:
-        resp = requests.get(DOCUMENT_URL, timeout=10)
-        resp.raise_for_status()
-        soup = BeautifulSoup(resp.text, "html.parser")
-        text = soup.get_text(separator="\n", strip=True)
+def fetch_and_store_documents():
+    for url in DOCUMENT_URLS:
+        logging.info(f"Fetching content from {url} ...")
+        try:
+            resp = requests.get(url, timeout=10)
+            resp.raise_for_status()
+            soup = BeautifulSoup(resp.text, "html.parser")
+            text = soup.get_text(separator="\n", strip=True)
 
-        # Simple split into chunks (~200 words each)
-        words = text.split()
-        chunk_size = 200
-        chunks = [" ".join(words[i:i+chunk_size]) for i in range(0, len(words), chunk_size)]
+            # Split into chunks (~200 words each)
+            words = text.split()
+            chunk_size = 200
+            chunks = [" ".join(words[i:i+chunk_size]) for i in range(0, len(words), chunk_size)]
 
-        for i, chunk in enumerate(chunks):
-            emb = get_embedding(chunk)
-            key = f"doc_chunk:{i}"
-            if r:
-                r.set(key, json.dumps({"text": chunk, "embedding": emb}))
-            DOC_CHUNKS.append({"text": chunk, "embedding": emb})
+            for i, chunk in enumerate(chunks):
+                emb = get_embedding(chunk)
+                key = f"doc_chunk:{url}:{i}"
+                if r:
+                    r.set(key, json.dumps({"text": chunk, "embedding": emb}))
+                DOC_CHUNKS.append({"text": chunk, "embedding": emb})
+            logging.info(f"Stored {len(chunks)} chunks from {url} in Redis.")
+        except Exception as e:
+            logging.error(f"Failed to fetch document {url}: {e}")
 
-        logging.info(f"Stored {len(DOC_CHUNKS)} document chunks in Redis.")
-    except Exception as e:
-        logging.error(f"Failed to fetch document: {e}")
-
-threading.Thread(target=fetch_and_store_document, daemon=True).start()
+threading.Thread(target=fetch_and_store_documents, daemon=True).start()
 
 # ----------------- Warmup -----------------
 def warmup_model():
     logging.info("Warming up model...")
-    _ = get_embedding("Hello, legal assistant!")
-    logging.info("Model warmup complete!")
+    try:
+        _ = ollama.chat(model=OLLAMA_MODEL, messages=[{"role": "user", "content": "Hello, legal assistant!"}])
+        logging.info("Ollama model warmup complete!")
+    except Exception as e:
+        logging.error(f"Warmup failed: {e}")
 
 threading.Thread(target=warmup_model, daemon=True).start()
 
@@ -116,9 +129,13 @@ def ask_model():
     prompt += "\n---\n".join(relevant_docs)
     prompt += f"\n\nUser: {query}\nAnswer:"
 
-    # Here you can call Ollama or any LLM to generate answer
-    # For demonstration, we just echo the prompt as response
-    answer = f"[Simulated LLM Response based on retrieved context]\n{prompt}"
+    # Call Ollama
+    try:
+        response = ollama.chat(model=OLLAMA_MODEL, messages=[{"role": "system", "content": prompt}])
+        answer = response['message']['content']
+    except Exception as e:
+        logging.error(f"Ollama call failed: {e}")
+        answer = "Error: Failed to generate response."
 
     # Cache result
     CACHE[key] = answer
@@ -128,7 +145,6 @@ def ask_model():
 # ----------------- Run App -----------------
 if __name__ == "__main__":
     app.run(host="0.0.0.0", port=5000, threaded=True)
-
 
 
 #VERSION 3
