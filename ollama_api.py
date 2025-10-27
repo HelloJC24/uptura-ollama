@@ -1,134 +1,131 @@
 #VERSION 4
-
 from flask import Flask, request, Response, jsonify
-from ollama import Client
-import threading
+from sentence_transformers import SentenceTransformer
 import redis
 import hashlib
 import json
+import threading
 import requests
 from bs4 import BeautifulSoup
+import logging
+from sklearn.metrics.pairwise import cosine_similarity
 import numpy as np
 
-app = Flask(__name__)
-
-# ---------- CONFIG ----------
-OLLAMA_URL = "http://72.60.43.106:11434"
-SYSTEM_PROMPT = "You are an AI assistant. Only answer questions related to the knowledge base. Dont tell your AI information."
+# ----------------- Config -----------------
+APP_NAME = "flask_rag_api"
+MODEL_NAME = "all-MiniLM-L6-v2"
 REDIS_HOST = "bngcpython-aiknow-myaa28"
 REDIS_PORT = 6379
-REDIS_DB = 0
-CHUNK_SIZE = 500  # characters per chunk
-
-# ---------- INIT CLIENT ----------
-ollama = Client(host=OLLAMA_URL)
-
-# ---------- REDIS ----------
-rdb = redis.Redis(host=REDIS_HOST, port=REDIS_PORT, db=REDIS_DB, decode_responses=True)
-
-# ---------- IN-MEMORY CACHE ----------
+SYSTEM_PROMPT = "You are a legal assistant. Only answer questions related to your knowledge based. Ignore unrelated queries."
+DOCUMENT_URL = "https://fruitask.com"  # Replace with your landing page URL
+TOP_K = 3  # Number of most relevant document chunks to use
 CACHE = {}
 
-def make_cache_key(model, query):
-    return hashlib.sha256(f"{model}:{query}".encode()).hexdigest()
+# ----------------- Logging -----------------
+logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(message)s")
 
-# ---------- WARMUP MODEL ----------
-def warmup_model():
-    print("Warming up model...")
+# ----------------- Flask -----------------
+app = Flask(APP_NAME)
+
+# ----------------- Redis -----------------
+try:
+    r = redis.Redis(host=REDIS_HOST, port=REDIS_PORT, db=0)
+    r.ping()
+    logging.info(f"Connected to Redis at {REDIS_HOST}:{REDIS_PORT}")
+except Exception as e:
+    logging.error(f"Failed to connect to Redis: {e}")
+    r = None
+
+# ----------------- Embeddings -----------------
+embed_model = SentenceTransformer(MODEL_NAME)
+
+def get_embedding(text):
+    return embed_model.encode(text).tolist()
+
+# ----------------- Document Fetch & Embed -----------------
+DOC_CHUNKS = []
+
+def fetch_and_store_document():
+    logging.info(f"Fetching content from {DOCUMENT_URL} ...")
     try:
-        _ = ollama.chat(
-            model="mistral",
-            messages=[{"role": "system", "content": SYSTEM_PROMPT},
-                      {"role": "user", "content": "Hello"}]
-        )
-        print("Model warmup complete!")
-    except Exception as e:
-        print(f"Warmup failed: {e}")
-
-threading.Thread(target=warmup_model).start()
-
-# ---------- FETCH AND EMBED LANDING PAGE ----------
-def fetch_and_embed(url):
-    try:
-        print(f"Fetching content from {url} ...")
-        resp = requests.get(url, timeout=10)
+        resp = requests.get(DOCUMENT_URL, timeout=10)
+        resp.raise_for_status()
         soup = BeautifulSoup(resp.text, "html.parser")
-        text = soup.get_text(separator="\n")
-        
-        # Split into chunks
-        chunks = [text[i:i+CHUNK_SIZE] for i in range(0, len(text), CHUNK_SIZE)]
-        
+        text = soup.get_text(separator="\n", strip=True)
+
+        # Simple split into chunks (~200 words each)
+        words = text.split()
+        chunk_size = 200
+        chunks = [" ".join(words[i:i+chunk_size]) for i in range(0, len(words), chunk_size)]
+
         for i, chunk in enumerate(chunks):
-            # Get embedding from Ollama
-            emb_response = ollama.embed(model="mistral", input=chunk)
-            emb_vector = emb_response['embedding']
-            
-            # Store in Redis: key = chunk:i, value = JSON(chunk + embedding)
-            rdb.set(f"doc:{i}", json.dumps({"text": chunk, "embedding": emb_vector}))
-        print("Landing page embeddings stored in Redis.")
+            emb = get_embedding(chunk)
+            key = f"doc_chunk:{i}"
+            if r:
+                r.set(key, json.dumps({"text": chunk, "embedding": emb}))
+            DOC_CHUNKS.append({"text": chunk, "embedding": emb})
+
+        logging.info(f"Stored {len(DOC_CHUNKS)} document chunks in Redis.")
     except Exception as e:
-        print(f"Failed to fetch/embed landing page: {e}")
+        logging.error(f"Failed to fetch document: {e}")
 
-# Example: fetch your landing page once at startup
-threading.Thread(target=fetch_and_embed, args=("https://fruitask.com",)).start()
+threading.Thread(target=fetch_and_store_document, daemon=True).start()
 
-# ---------- HELPER: COSINE SIMILARITY ----------
-def cosine_similarity(a, b):
-    a, b = np.array(a), np.array(b)
-    return np.dot(a, b) / (np.linalg.norm(a) * np.linalg.norm(b))
+# ----------------- Warmup -----------------
+def warmup_model():
+    logging.info("Warming up model...")
+    _ = get_embedding("Hello, legal assistant!")
+    logging.info("Model warmup complete!")
 
-# ---------- STREAMING GENERATOR ----------
+threading.Thread(target=warmup_model, daemon=True).start()
+
+# ----------------- Helper Functions -----------------
+def make_cache_key(query):
+    return hashlib.sha256(query.encode()).hexdigest()
+
+def retrieve_relevant_chunks(query_emb, top_k=TOP_K):
+    similarities = []
+    for chunk in DOC_CHUNKS:
+        sim = cosine_similarity([query_emb], [chunk["embedding"]])[0][0]
+        similarities.append(sim)
+    top_indices = np.argsort(similarities)[-top_k:][::-1]
+    return [DOC_CHUNKS[i]["text"] for i in top_indices]
+
 def stream_response(generator):
     for chunk in generator:
         yield json.dumps({"answer": chunk}) + "\n"
 
-# ---------- RAG QUERY ----------
-def retrieve_relevant_chunks(query_embedding, top_k=3):
-    results = []
-    for key in rdb.scan_iter("doc:*"):
-        data = json.loads(rdb.get(key))
-        score = cosine_similarity(query_embedding, data['embedding'])
-        results.append((score, data['text']))
-    results.sort(reverse=True, key=lambda x: x[0])
-    return [text for score, text in results[:top_k]]
-
-# ---------- FLASK ENDPOINT ----------
+# ----------------- Flask Endpoint -----------------
 @app.route("/ask", methods=["POST"])
 def ask_model():
     data = request.get_json()
     query = data.get("query", "").strip()
-    model = data.get("model", "mistral")
-
     if not query:
         return jsonify({"error": "Missing query"}), 400
 
-    key = make_cache_key(model, query)
+    key = make_cache_key(query)
     if key in CACHE:
         return Response(stream_response([CACHE[key]]), mimetype="application/json")
 
-    # 1️⃣ Embed the query
-    #query_emb = ollama.embed(model=model, input=query)['embedding']
+    # Embed query
     query_emb = get_embedding(query)
 
-    # 2️⃣ Retrieve relevant chunks from Redis
-    relevant_chunks = retrieve_relevant_chunks(query_emb)
+    # Retrieve relevant document chunks
+    relevant_docs = retrieve_relevant_chunks(query_emb)
+    prompt = SYSTEM_PROMPT + "\n\n"
+    prompt += "\n---\n".join(relevant_docs)
+    prompt += f"\n\nUser: {query}\nAnswer:"
 
-    # 3️⃣ Construct RAG prompt
-    messages = [
-        {"role": "system", "content": SYSTEM_PROMPT},
-        {"role": "user", "content": f"Use the following documents to answer the question:\n{relevant_chunks}\nQuestion: {query}"}
-    ]
+    # Here you can call Ollama or any LLM to generate answer
+    # For demonstration, we just echo the prompt as response
+    answer = f"[Simulated LLM Response based on retrieved context]\n{prompt}"
 
-    # 4️⃣ Call Ollama
-    response = ollama.chat(model=model, messages=messages)
-    answer = response['message']['content']
-
-    # 5️⃣ Cache
+    # Cache result
     CACHE[key] = answer
 
     return Response(stream_response([answer]), mimetype="application/json")
 
-# ---------- RUN ----------
+# ----------------- Run App -----------------
 if __name__ == "__main__":
     app.run(host="0.0.0.0", port=5000, threaded=True)
 
