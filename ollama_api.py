@@ -70,7 +70,7 @@ def fetch_and_embed(url):
         print(f"Failed to fetch/embed landing page: {e}")
 
 # Example: fetch your landing page once at startup
-threading.Thread(target=fetch_and_embed, args=("https://your-landing-page.com",)).start()
+threading.Thread(target=fetch_and_embed, args=("https://fruitask.com",)).start()
 
 # ---------- HELPER: COSINE SIMILARITY ----------
 def cosine_similarity(a, b):
