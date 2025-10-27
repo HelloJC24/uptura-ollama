@@ -28,7 +28,10 @@ Do not generate answers from your own knowledge or external sources.
 DOCUMENT_URLS = [
     "https://thebngc.com",
     "https://gogel.thebngc.com",
-    "https://uptura-tech.com"
+    "https://uptura-tech.com",
+    "https://gogel.thebngc.com/agents",
+    "https://thebngc.com/privacy-policy",
+    "https://thebngc.com/terms-conditions"
 ]  # Add as many landing pages as needed
 TOP_K = 3  # Number of most relevant document chunks to use
 CACHE = {}
@@ -149,14 +152,14 @@ def ask_model():
     relevant_docs = retrieve_relevant_chunks(query_emb)
     if not relevant_docs or all(len(doc.strip()) == 0 for doc in relevant_docs):
         answer = "I’m sorry, I don’t have enough information to answer that."
-        
-    prompt = SYSTEM_PROMPT + "\n\n"
-    prompt += "\n---\n".join(relevant_docs)
-    prompt += f"\n\nUser: {query}\nAnswer:"
+    else
+        prompt = SYSTEM_PROMPT + "\n\n"
+        prompt += "\n---\n".join(relevant_docs)
+        prompt += f"\n\nUser: {query}\nAnswer:"
 
     # Call Ollama
     try:
-        response = ollama.chat(model=OLLAMA_MODEL, messages=[{"role": "system", "content": prompt}], MAX_TOKENS=100)
+        response = ollama.chat(model=OLLAMA_MODEL, messages=[{"role": "system", "content": prompt}], max_tokens=100)
         answer = response['message']['content']
     except Exception as e:
         logging.error(f"Ollama call failed: {e}")
