@@ -1,15 +1,10 @@
 app:
   name: ollama-api
   type: docker
-  env:
-    - name: FLASK_ENV
-      value: production
-    - name: OLLAMA_HOST
-      value: http://host.docker.internal:11434
   ports:
     - "5000:5000"
   extra_hosts:
     - "host.docker.internal:host-gateway"
-  build_args:
-    - "--network=host"
-
+  env:
+    - name: FLASK_ENV
+      value: production
