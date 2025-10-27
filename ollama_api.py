@@ -1,196 +1,306 @@
-#VERSION 4
-from flask import Flask, request, Response, jsonify
-from sentence_transformers import SentenceTransformer
-import redis
-import hashlib
-import json
-import threading
-import requests
-from bs4 import BeautifulSoup
-import logging
-from sklearn.metrics.pairwise import cosine_similarity
-import numpy as np
-from ollama import Client
-
-# ----------------- Config -----------------
-APP_NAME = "flask_rag_api"
-MODEL_NAME = "all-MiniLM-L6-v2"
-OLLAMA_HOST = "http://72.60.43.106:11434"  # Your Ollama host
-OLLAMA_MODEL = "phi3:mini"
-REDIS_HOST = "bngcpython-aiknow-myaa28"
-REDIS_PORT = 6379
-# SYSTEM_PROMPT = "You are a legal assistant. Only answer questions related to your knowledge based. Ignore unrelated queries."
-SYSTEM_PROMPT = """
-You are a legal assistant. Only answer questions based on the information provided in the retrieved documents.
-If the answer is not in the documents, respond with: "I’m sorry, I don’t have enough information to answer that."
-Do not generate answers from your own knowledge or external sources.
 """
-DOCUMENT_URLS = [
-    "https://thebngc.com",
-    "https://gogel.thebngc.com",
-    "https://uptura-tech.com",
-    "https://gogel.thebngc.com/agents",
-    "https://thebngc.com/privacy-policy",
-    "https://thebngc.com/terms-conditions"
-]  # Add as many landing pages as needed
-TOP_K = 3  # Number of most relevant document chunks to use
-CACHE = {}
-prompt = "i dont know"  # default empty
+Enhanced Flask RAG API - VERSION 5
+A robust Retrieval-Augmented Generation API with improved architecture, 
+comprehensive logging, performance optimization, and configurable streaming.
+"""
 
-# ----------------- Logging -----------------
-logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(message)s")
+import threading
+import time
+import logging
+from typing import Dict, Any, Optional
+from flask import Flask, request, jsonify
 
-# ----------------- Flask -----------------
-app = Flask(APP_NAME)
+# Import our improved modules
+from config import Config
+from models import document_processor, query_cache
+from services.redis_service import redis_service
+from services.ollama_service import ollama_service
+from services.embedding_service import embedding_service
+from utils import (
+    RAGRetriever, ResponseGenerator, ResponseFormatter, 
+    validate_query, sanitize_text, log_request_info,
+    create_health_check_response, performance_monitor,
+    timing_decorator
+)
 
-# ----------------- Redis -----------------
-try:
-    r = redis.Redis(host=REDIS_HOST, port=REDIS_PORT, db=0, password="987654321")
-    r.ping()
-    logging.info(f"Connected to Redis at {REDIS_HOST}:{REDIS_PORT}")
-except Exception as e:
-    logging.error(f"Failed to connect to Redis: {e}")
-    r = None
+# Initialize logging first
+Config.setup_logging()
+logger = logging.getLogger(__name__)
 
-# ----------------- Embeddings -----------------
-embed_model = SentenceTransformer(MODEL_NAME)
+# Validate configuration
+if not Config.validate_config():
+    logger.error("Configuration validation failed. Exiting.")
+    exit(1)
 
-def get_embedding(text):
-    return embed_model.encode(text).tolist()
+Config.log_config()
 
-# ----------------- Ollama Client -----------------
-ollama = Client(host=OLLAMA_HOST)
+# Initialize Flask app
+app = Flask(Config.APP_NAME)
 
-# ----------------- Document Fetch & Embed -----------------
-DOC_CHUNKS = []
+# Global RAG retriever instance
+rag_retriever: Optional[RAGRetriever] = None
 
-def normalize_text(text):
-    return text.lower().strip()
-
-def generate_streaming_response(messages):
-    try:
-        stream = ollama.chat(model=OLLAMA_MODEL, messages=messages, stream=True)
-        for chunk in stream:
-            if "message" in chunk and "content" in chunk["message"]:
-                yield json.dumps({"answer": chunk["message"]["content"]}) + "\n"
-    except Exception as e:
-        logging.error(f"Ollama streaming failed: {e}")
-        yield json.dumps({"answer": "Error: Failed to generate response."}) + "\n"
-
-
-def fetch_and_store_documents():
-    for url in DOCUMENT_URLS:
-        logging.info(f"Fetching content from {url} ...")
-        try:
-            resp = requests.get(url, timeout=10)
-            resp.raise_for_status()
-            soup = BeautifulSoup(resp.text, "html.parser")
-            text = soup.get_text(separator="\n", strip=True)
-
-            # Split into chunks (~200 words each)
-            words = text.split()
-            chunk_size = 200
-            chunks = [" ".join(words[i:i+chunk_size]) for i in range(0, len(words), chunk_size)]
-
-            for i, chunk in enumerate(chunks):
-                emb = get_embedding( normalize_text(chunk))
-                key = f"doc_chunk:{url}:{i}"
-                if r:
-                    r.set(key, json.dumps({"text": chunk, "embedding": emb}))
-                DOC_CHUNKS.append({"text": chunk, "embedding": emb})
-            logging.info(f"Stored {len(chunks)} chunks from {url} in Redis.")
-        except Exception as e:
-            logging.error(f"Failed to fetch document {url}: {e}")
-
-threading.Thread(target=fetch_and_store_documents, daemon=True).start()
-
-# ----------------- Warmup -----------------
-def warmup_model():
-    logging.info("Warming up model...")
-    try:
-        _ = ollama.chat(model=OLLAMA_MODEL, messages=[{"role": "user", "content": "Hello, legal assistant!"}])
-        logging.info("Ollama model warmup complete!")
-    except Exception as e:
-        logging.error(f"Warmup failed: {e}")
-
-threading.Thread(target=warmup_model, daemon=True).start()
-
-# ----------------- Helper Functions -----------------
-def make_cache_key(query):
-    return hashlib.sha256(query.encode()).hexdigest()
-
-
-
-# def retrieve_relevant_chunks(query_emb, top_k=TOP_K):
-#     similarities = []
-#     for chunk in DOC_CHUNKS:
-#         sim = cosine_similarity([query_emb], [chunk["embedding"]])[0][0]
-#         similarities.append(sim)
-#     top_indices = np.argsort(similarities)[-top_k:][::-1]
-#     return [DOC_CHUNKS[i]["text"] for i in top_indices]
-
-def retrieve_relevant_chunks(query_emb, top_k=TOP_K, min_sim=0.35):
-    similarities = []
-    for chunk in DOC_CHUNKS:
-        sim = cosine_similarity([query_emb], [chunk["embedding"]])[0][0]
-        similarities.append(sim)
-    top_indices = np.argsort(similarities)[-top_k:][::-1]
+@timing_decorator
+def initialize_services():
+    """Initialize all services and warm up models"""
+    logger.info("Initializing services...")
     
-    # Only include chunks above similarity threshold
-    return [DOC_CHUNKS[i]["text"] for i in top_indices if similarities[i] >= min_sim]
+    # Check service availability
+    services_status = {
+        "redis": redis_service.is_available(),
+        "ollama": ollama_service.is_available(),
+        "embeddings": embedding_service.is_available()
+    }
+    
+    logger.info(f"Service status: {services_status}")
+    
+    # Log warnings for unavailable services
+    for service, available in services_status.items():
+        if not available:
+            logger.warning(f"{service.title()} service is not available")
+    
+    return services_status
 
-
-def stream_response(generator):
-    for chunk in generator:
-        yield json.dumps({"answer": chunk}) + "\n"
-
-# ----------------- Flask Endpoint -----------------
-@app.route("/ask", methods=["POST"])
-def ask_model():
-    data = request.get_json()
-    query = data.get("query", "").strip()
-    if not query:
-        return jsonify({"error": "Missing query"}), 400
-
-    # key = make_cache_key(query)
-    # if key in CACHE:
-    #     return Response(stream_response([CACHE[key]]), mimetype="application/json")
-    key = make_cache_key(query)
-    if key in CACHE:
-        def cached_gen():
-            yield json.dumps({"answer": CACHE[key]}) + "\n"
-        return Response(cached_gen(), mimetype="application/json")
+@timing_decorator
+def load_documents():
+    """Load and process documents in background"""
+    global rag_retriever
+    
+    logger.info("Starting document processing...")
+    try:
+        # Process all configured documents
+        document_processor.process_all_documents()
         
-    # Embed query
-    query_emb = get_embedding( normalize_text(query))
-    relevant_docs = retrieve_relevant_chunks(query_emb)
+        # Initialize RAG retriever with processed chunks
+        rag_retriever = RAGRetriever(document_processor.chunks)
+        
+        logger.info(f"Document processing completed. RAG retriever initialized with {len(document_processor.chunks)} chunks")
+        
+    except Exception as e:
+        logger.error(f"Error during document processing: {e}")
+        # Initialize with empty chunks to prevent crashes
+        rag_retriever = RAGRetriever([])
 
-    # Retrieve relevant document chunks
-    if not relevant_docs or all(len(doc.strip()) == 0 for doc in relevant_docs):
-    # No relevant info — return immediately
-        prompt = "i dont know"
-        answer = "I’m sorry, I don’t have enough information to answer that."
-    else:
-        # Construct prompt only when we have relevant docs
-        prompt = SYSTEM_PROMPT + "\n\n" + "\n---\n".join(relevant_docs)
-        prompt += f"\n\nUser: {query}\nAnswer:"
+# Flask Routes
 
-        # Call Ollama
-        # Call Ollama safely
-        try:
-            response = ollama.chat(
-                model=OLLAMA_MODEL,
-                messages=[{"role": "system", "content": prompt}]
-            )
-            answer = response['message']['content']
-        except Exception as e:
-            logging.error(f"Ollama call failed: {e}")
-            answer = "Error: Failed to generate response."
-    #Cache result
-    CACHE[key] = answer
-    return Response(stream_response([answer]), mimetype="application/json")
+@app.route("/health", methods=["GET"])
+def health_check():
+    """Health check endpoint"""
+    logger.debug("Health check requested")
+    health_data = create_health_check_response()
+    return jsonify(health_data), 200
 
-# ----------------- Run App -----------------
+@app.route("/stats", methods=["GET"])
+def get_stats():
+    """Get system statistics"""
+    logger.debug("Statistics requested")
+    
+    try:
+        stats = {
+            "performance": performance_monitor.get_stats(),
+            "cache": query_cache.get_stats(),
+            "documents": document_processor.get_stats(),
+            "services": {
+                "redis": redis_service.get_stats(),
+                "ollama": ollama_service.get_stats(),
+                "embeddings": embedding_service.get_stats()
+            }
+        }
+        
+        return jsonify(ResponseFormatter.format_stats_response(stats)), 200
+        
+    except Exception as e:
+        logger.error(f"Error getting statistics: {e}")
+        return ResponseFormatter.format_error_response("Failed to retrieve statistics", 500)
+
+@app.route("/ask", methods=["POST"])
+@timing_decorator
+def ask_model():
+    """Main endpoint for asking questions"""
+    start_time = time.time()
+    user_ip = request.remote_addr
+    
+    try:
+        # Get and validate request data
+        data = request.get_json()
+        if not data:
+            return ResponseFormatter.format_error_response("Invalid JSON in request body")
+        
+        log_request_info(data, user_ip)
+        
+        # Extract and validate query
+        raw_query = data.get("query", "")
+        query = sanitize_text(raw_query)
+        
+        is_valid, error_message = validate_query(query)
+        if not is_valid:
+            return ResponseFormatter.format_error_response(error_message)
+        
+        # Extract streaming preference (defaults to config setting)
+        use_streaming = data.get("streaming", Config.ENABLE_STREAMING)
+        
+        logger.info(f"Processing query: '{query[:100]}...' (streaming: {use_streaming})")
+        
+        # Check cache first
+        cached_answer = query_cache.get(query)
+        if cached_answer:
+            logger.info("Returning cached answer")
+            performance_monitor.record_request(time.time() - start_time, cache_hit=True)
+            
+            if use_streaming:
+                def cached_generator():
+                    yield cached_answer
+                return ResponseFormatter.format_streaming_response(cached_generator())
+            else:
+                return ResponseFormatter.format_direct_response(cached_answer)
+        
+        # Check if RAG retriever is ready
+        if not rag_retriever:
+            logger.warning("RAG retriever not initialized")
+            return ResponseFormatter.format_error_response("System is still initializing. Please try again in a moment.", 503)
+        
+        # Retrieve relevant documents
+        relevant_chunks = rag_retriever.retrieve_relevant_chunks(query)
+        
+        if not relevant_chunks:
+            logger.info("No relevant documents found for query")
+            answer = "I'm sorry, I don't have enough information to answer that question."
+            
+            # Cache the result
+            query_cache.set(query, answer)
+            performance_monitor.record_request(time.time() - start_time, cache_hit=False)
+            
+            if use_streaming:
+                def no_info_generator():
+                    yield answer
+                return ResponseFormatter.format_streaming_response(no_info_generator())
+            else:
+                return ResponseFormatter.format_direct_response(answer)
+        
+        # Create context from relevant chunks
+        context = rag_retriever.create_context(relevant_chunks)
+        
+        logger.info(f"Found {len(relevant_chunks)} relevant chunks, context length: {len(context)} characters")
+        
+        # Generate answer
+        if use_streaming:
+            # Streaming response
+            answer_generator = ResponseGenerator.generate_answer(query, context, streaming=True)
+            
+            # Collect full answer for caching
+            def cache_and_stream():
+                full_answer = ""
+                for chunk in answer_generator:
+                    full_answer += chunk
+                    yield chunk
+                
+                # Cache the complete answer
+                query_cache.set(query, full_answer)
+                performance_monitor.record_request(time.time() - start_time, cache_hit=False)
+            
+            return ResponseFormatter.format_streaming_response(cache_and_stream())
+        
+        else:
+            # Direct response
+            answer = ResponseGenerator.generate_answer(query, context, streaming=False)
+            
+            # Cache the result
+            query_cache.set(query, answer)
+            performance_monitor.record_request(time.time() - start_time, cache_hit=False)
+            
+            return ResponseFormatter.format_direct_response(answer)
+    
+    except Exception as e:
+        logger.error(f"Error processing request: {e}", exc_info=True)
+        performance_monitor.record_request(time.time() - start_time, cache_hit=False, error=True)
+        return ResponseFormatter.format_error_response("Internal server error", 500)
+
+@app.route("/clear-cache", methods=["POST"])
+def clear_cache():
+    """Clear the query cache"""
+    logger.info("Cache clear requested")
+    
+    try:
+        # Clear in-memory cache
+        query_cache.clear()
+        
+        # Clear Redis cache if available
+        if redis_service.is_available():
+            cleared_count = redis_service.clear_cache("doc_chunk:*")
+            logger.info(f"Cleared {cleared_count} items from Redis cache")
+        
+        return jsonify({"status": "success", "message": "Cache cleared successfully"}), 200
+        
+    except Exception as e:
+        logger.error(f"Error clearing cache: {e}")
+        return ResponseFormatter.format_error_response("Failed to clear cache", 500)
+
+@app.route("/reload-documents", methods=["POST"])
+def reload_documents():
+    """Reload documents from configured URLs"""
+    logger.info("Document reload requested")
+    
+    try:
+        # Start document processing in background
+        threading.Thread(target=load_documents, daemon=True).start()
+        
+        return jsonify({
+            "status": "success", 
+            "message": "Document reloading started in background"
+        }), 202
+        
+    except Exception as e:
+        logger.error(f"Error starting document reload: {e}")
+        return ResponseFormatter.format_error_response("Failed to start document reload", 500)
+
+# Error handlers
+@app.errorhandler(400)
+def bad_request(error):
+    return ResponseFormatter.format_error_response("Bad request", 400)
+
+@app.errorhandler(404)
+def not_found(error):
+    return ResponseFormatter.format_error_response("Endpoint not found", 404)
+
+@app.errorhandler(500)
+def internal_error(error):
+    logger.error(f"Internal server error: {error}")
+    return ResponseFormatter.format_error_response("Internal server error", 500)
+
+# Startup initialization
+def initialize_app():
+    """Initialize the application"""
+    logger.info("Starting Flask RAG API initialization...")
+    
+    # Initialize services
+    services_status = initialize_services()
+    
+    # Start document loading in background
+    document_thread = threading.Thread(target=load_documents, daemon=True)
+    document_thread.start()
+    
+    logger.info("Application initialization completed!")
+    logger.info(f"API will be available at http://{Config.HOST}:{Config.PORT}")
+    logger.info("Available endpoints:")
+    logger.info("  POST /ask - Ask questions")
+    logger.info("  GET  /health - Health check")
+    logger.info("  GET  /stats - System statistics")
+    logger.info("  POST /clear-cache - Clear cache")
+    logger.info("  POST /reload-documents - Reload documents")
+
 if __name__ == "__main__":
-    app.run(host="0.0.0.0", port=5000, threaded=True)
-
+    try:
+        initialize_app()
+        
+        # Run Flask app
+        app.run(
+            host=Config.HOST,
+            port=Config.PORT,
+            debug=Config.DEBUG,
+            threaded=True,
+            use_reloader=False  # Disable reloader to prevent double initialization
+        )
+        
+    except Exception as e:
+        logger.error(f"Failed to start application: {e}")
+        exit(1)
