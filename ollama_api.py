@@ -1,14 +1,11 @@
 from flask import Flask, request, jsonify
 from ollama import Client
-import os
 
 app = Flask(__name__)
 
-# Allow environment override for flexible deployment (Dokploy / local)
-OLLAMA_URL = os.getenv("OLLAMA_HOST", "http://127.0.0.1:11434")
-
-# Create the Ollama client properly
-ollama = Client(host=OLLAMA_URL)
+# Connect to Ollama running on the host
+OLLAMA_URL = "http://host.docker.internal:11434"
+ollama = Client(host=OLLAMA_URL)  # must assign to variable
 
 @app.route('/ask', methods=['POST'])
 def ask_model():
@@ -20,10 +17,9 @@ def ask_model():
         return jsonify({"error": "Missing query"}), 400
 
     try:
-        response = ollama.chat(
-            model=model,
-            messages=[{"role": "user", "content": query}]
-        )
+        response = ollama.chat(model=model, messages=[
+            {"role": "user", "content": query}
+        ])
         return jsonify({"answer": response['message']['content']})
     except Exception as e:
         return jsonify({"error": str(e)}), 500
