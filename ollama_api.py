@@ -32,6 +32,7 @@ DOCUMENT_URLS = [
 ]  # Add as many landing pages as needed
 TOP_K = 3  # Number of most relevant document chunks to use
 CACHE = {}
+prompt = ""  # default empty
 
 # ----------------- Logging -----------------
 logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(message)s")
@@ -60,6 +61,9 @@ ollama = Client(host=OLLAMA_HOST)
 # ----------------- Document Fetch & Embed -----------------
 DOC_CHUNKS = []
 
+def normalize_text(text):
+    return text.lower().strip()
+
 def fetch_and_store_documents():
     for url in DOCUMENT_URLS:
         logging.info(f"Fetching content from {url} ...")
@@ -75,7 +79,7 @@ def fetch_and_store_documents():
             chunks = [" ".join(words[i:i+chunk_size]) for i in range(0, len(words), chunk_size)]
 
             for i, chunk in enumerate(chunks):
-                emb = get_embedding(chunk)
+                emb = get_embedding( normalize_text(chunk))
                 key = f"doc_chunk:{url}:{i}"
                 if r:
                     r.set(key, json.dumps({"text": chunk, "embedding": emb}))
@@ -100,6 +104,8 @@ threading.Thread(target=warmup_model, daemon=True).start()
 # ----------------- Helper Functions -----------------
 def make_cache_key(query):
     return hashlib.sha256(query.encode()).hexdigest()
+
+
 
 # def retrieve_relevant_chunks(query_emb, top_k=TOP_K):
 #     similarities = []
@@ -137,16 +143,16 @@ def ask_model():
         return Response(stream_response([CACHE[key]]), mimetype="application/json")
         
     # Embed query
-    query_emb = get_embedding(query)
+    query_emb = get_embedding( normalize_text(query))
 
     # Retrieve relevant document chunks
     relevant_docs = retrieve_relevant_chunks(query_emb)
     if not relevant_docs or all(len(doc.strip()) == 0 for doc in relevant_docs):
         answer = "I’m sorry, I don’t have enough information to answer that."
-    else:
-        prompt = SYSTEM_PROMPT + "\n\n"
-        prompt += "\n---\n".join(relevant_docs)
-        prompt += f"\n\nUser: {query}\nAnswer:"
+        
+    prompt = SYSTEM_PROMPT + "\n\n"
+    prompt += "\n---\n".join(relevant_docs)
+    prompt += f"\n\nUser: {query}\nAnswer:"
 
     # Call Ollama
     try:
