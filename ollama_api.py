@@ -152,7 +152,7 @@ def ask_model():
     relevant_docs = retrieve_relevant_chunks(query_emb)
     if not relevant_docs or all(len(doc.strip()) == 0 for doc in relevant_docs):
         answer = "I’m sorry, I don’t have enough information to answer that."
-    else
+    else:
         prompt = SYSTEM_PROMPT + "\n\n"
         prompt += "\n---\n".join(relevant_docs)
         prompt += f"\n\nUser: {query}\nAnswer:"
