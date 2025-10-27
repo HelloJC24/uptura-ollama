@@ -16,7 +16,7 @@ from ollama import Client
 APP_NAME = "flask_rag_api"
 MODEL_NAME = "all-MiniLM-L6-v2"
 OLLAMA_HOST = "http://72.60.43.106:11434"  # Your Ollama host
-OLLAMA_MODEL = "mistral"
+OLLAMA_MODEL = "phi3:mini"
 REDIS_HOST = "bngcpython-aiknow-myaa28"
 REDIS_PORT = 6379
 SYSTEM_PROMPT = "You are a legal assistant. Only answer questions related to your knowledge based. Ignore unrelated queries."
@@ -36,7 +36,7 @@ app = Flask(APP_NAME)
 
 # ----------------- Redis -----------------
 try:
-    r = redis.Redis(host=REDIS_HOST, port=REDIS_PORT, db=0)
+    r = redis.Redis(host=REDIS_HOST, port=REDIS_PORT, db=0, password="987654321")
     r.ping()
     logging.info(f"Connected to Redis at {REDIS_HOST}:{REDIS_PORT}")
 except Exception as e:
