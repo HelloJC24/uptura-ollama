@@ -158,18 +158,18 @@ def ask_model():
         prompt = SYSTEM_PROMPT + "\n\n" + "\n---\n".join(relevant_docs)
         prompt += f"\n\nUser: {query}\nAnswer:"
 
-    # Call Ollama
-    # Call Ollama safely
-    try:
-        response = ollama.chat(
-            model=OLLAMA_MODEL,
-            messages=[{"role": "system", "content": prompt}],
-            max_tokens=100
-        )
-        answer = response['message']['content']
-    except Exception as e:
-        logging.error(f"Ollama call failed: {e}")
-        answer = "Error: Failed to generate response."
+        # Call Ollama
+        # Call Ollama safely
+        try:
+            response = ollama.chat(
+                model=OLLAMA_MODEL,
+                messages=[{"role": "system", "content": prompt}],
+                max_tokens=100
+            )
+            answer = response['message']['content']
+        except Exception as e:
+            logging.error(f"Ollama call failed: {e}")
+            answer = "Error: Failed to generate response."
 
     # Cache result
     CACHE[key] = answer
