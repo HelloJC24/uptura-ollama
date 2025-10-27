@@ -149,17 +149,22 @@ def ask_model():
     query_emb = get_embedding( normalize_text(query))
 
     # Retrieve relevant document chunks
-    relevant_docs = retrieve_relevant_chunks(query_emb)
     if not relevant_docs or all(len(doc.strip()) == 0 for doc in relevant_docs):
-        answer = "I’m sorry, I don’t have enough information to answer that."
+    # No relevant info — return immediately
+    answer = "I’m sorry, I don’t have enough information to answer that."
     else:
-        prompt = SYSTEM_PROMPT + "\n\n"
-        prompt += "\n---\n".join(relevant_docs)
+        # Construct prompt only when we have relevant docs
+        prompt = SYSTEM_PROMPT + "\n\n" + "\n---\n".join(relevant_docs)
         prompt += f"\n\nUser: {query}\nAnswer:"
 
     # Call Ollama
+    # Call Ollama safely
     try:
-        response = ollama.chat(model=OLLAMA_MODEL, messages=[{"role": "system", "content": prompt}], max_tokens=100)
+        response = ollama.chat(
+            model=OLLAMA_MODEL,
+            messages=[{"role": "system", "content": prompt}],
+            max_tokens=100
+        )
         answer = response['message']['content']
     except Exception as e:
         logging.error(f"Ollama call failed: {e}")
