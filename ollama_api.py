@@ -152,29 +152,67 @@ def ask_model():
     if not query:
         return jsonify({"error": "Missing query"}), 400
 
+    # key = make_cache_key(query)
+    # if key in CACHE:
+    #     return Response(stream_response([CACHE[key]]), mimetype="application/json")
     key = make_cache_key(query)
     if key in CACHE:
-        return Response(stream_response([CACHE[key]]), mimetype="application/json")
+        def cached_gen():
+            yield json.dumps({"answer": CACHE[key]}) + "\n"
+        return Response(cached_gen(), mimetype="application/json")
         
     # Embed query
     query_emb = get_embedding( normalize_text(query))
     relevant_docs = retrieve_relevant_chunks(query_emb)
 
+    if not relevant_docs:
+        answer = "I’m sorry, I don’t have enough information to answer that."
+        CACHE[key] = answer
+        def no_info_gen():
+            yield json.dumps({"answer": answer}) + "\n"
+        return Response(no_info_gen(), mimetype="application/json")
+
+     # Build messages
     separator = "\n---\n"
     messages = [
         {"role": "system", "content": SYSTEM_PROMPT.strip()},
-        {"role": "user", "content": f"Context:\n{separator.join(relevant_docs)}"},
+        {"role": "user", "content": "Context:\n" + separator.join(relevant_docs)},
         {"role": "user", "content": query}
     ]
 
+    def generate():
+        try:
+            full_answer = ""
+            for event in ollama.chat(model=OLLAMA_MODEL, messages=messages, stream=True):
+                if "message" in event and "content" in event["message"]:
+                    token = event["message"]["content"]
+                    full_answer += token
+                    yield json.dumps({"answer": token}) + "\n"
+            # Cache final answer after streaming
+            CACHE[key] = full_answer
+        except Exception as e:
+            logging.error(f"Ollama streaming failed: {e}")
+            yield json.dumps({"error": str(e)}) + "\n"
 
-    # If no relevant docs, respond immediately
-    if not relevant_docs:
-        return Response(stream_response(["I’m sorry, I don’t have enough information to answer that."]),
-                        mimetype="application/json")
+    # Ensure Flask doesn't buffer
+    return Response(generate(), mimetype="application/json", direct_passthrough=True)
+
+
+    # separator = "\n---\n"
+    # messages = [
+    #     {"role": "system", "content": SYSTEM_PROMPT.strip()},
+    #     {"role": "user", "content": f"Context:\n{separator.join(relevant_docs)}"},
+    #     {"role": "user", "content": query}
+    # ]
+
+
+    # # If no relevant docs, respond immediately
+    # if not relevant_docs:
+    #     return Response(stream_response(["I’m sorry, I don’t have enough information to answer that."]),
+    #                     mimetype="application/json")
     
-    # Stream Ollama output in real time
-    return Response(generate_streaming_response(messages), mimetype="application/json")
+    # # Stream Ollama output in real time
+    # return Response(generate_streaming_response(messages), mimetype="application/json")
 
 
     # # Retrieve relevant document chunks
