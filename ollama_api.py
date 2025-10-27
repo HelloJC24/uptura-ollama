@@ -19,9 +19,15 @@ def make_cache_key(model, query):
 
 # Warmup model on startup
 def warmup_model():
-    print("Warming up model...")
+    print("Warming up model!!!...")
     try:
-        _ = ollama.chat(model="mistral", messages=[{"role": "user", "content": "Hello"}])
+        _ = ollama.chat(
+            model="mistral",
+            messages=[
+                {"role": "system", "content": "You are a lawyer. Only answer legal questions. Politely refuse any question that is not related to law."},
+                {"role": "user", "content": "Hello"}
+            ]
+        )
         print("Model warmup complete!")
     except Exception as e:
         print(f"Warmup failed: {e}")
@@ -46,8 +52,14 @@ def ask_model():
     if key in CACHE:
         return Response(stream_response([CACHE[key]]), mimetype='application/json')
 
-    # Call Ollama (blocking)
-    response = ollama.chat(model=model, messages=[{"role": "user", "content": query}])
+    # Call Ollama with system prompt
+    response = ollama.chat(
+        model=model,
+        messages=[
+            {"role": "system", "content": "You are a lawyer. Only answer legal questions. Politely refuse any question that is not related to law."},
+            {"role": "user", "content": query}
+        ]
+    )
 
     # Cache the result
     CACHE[key] = response['message']['content']
@@ -56,6 +68,73 @@ def ask_model():
 
 if __name__ == "__main__":
     app.run(host="0.0.0.0", port=5000, threaded=True)
+
+
+
+
+
+
+
+
+
+# from flask import Flask, request, Response, jsonify
+# from ollama import Client
+# import hashlib
+# import json
+# import threading
+
+# app = Flask(__name__)
+
+# # Ollama client
+# OLLAMA_URL = "http://72.60.43.106:11434"
+# ollama = Client(host=OLLAMA_URL)
+
+# # In-memory cache
+# CACHE = {}
+
+# # Helper: generate cache key
+# def make_cache_key(model, query):
+#     return hashlib.sha256(f"{model}:{query}".encode()).hexdigest()
+
+# # Warmup model on startup
+# def warmup_model():
+#     print("Warming up model...")
+#     try:
+#         _ = ollama.chat(model="mistral", messages=[{"role": "user", "content": "Hello"}])
+#         print("Model warmup complete!")
+#     except Exception as e:
+#         print(f"Warmup failed: {e}")
+
+# threading.Thread(target=warmup_model).start()
+
+# # Streaming generator
+# def stream_response(generator):
+#     for chunk in generator:
+#         yield json.dumps({"answer": chunk}) + "\n"
+
+# @app.route('/ask', methods=['POST'])
+# def ask_model():
+#     data = request.get_json()
+#     query = data.get('query', '').strip()
+#     model = data.get('model', 'mistral')
+
+#     if not query:
+#         return jsonify({"error": "Missing query"}), 400
+
+#     key = make_cache_key(model, query)
+#     if key in CACHE:
+#         return Response(stream_response([CACHE[key]]), mimetype='application/json')
+
+#     # Call Ollama (blocking)
+#     response = ollama.chat(model=model, messages=[{"role": "user", "content": query}])
+
+#     # Cache the result
+#     CACHE[key] = response['message']['content']
+
+#     return Response(stream_response([response['message']['content']]), mimetype='application/json')
+
+# if __name__ == "__main__":
+#     app.run(host="0.0.0.0", port=5000, threaded=True)
 
 
 # from flask import Flask, request, jsonify, Response
