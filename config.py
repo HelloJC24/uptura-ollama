@@ -31,8 +31,8 @@ class Config:
     # RAG Settings
     CHUNK_SIZE: int = int(os.getenv("CHUNK_SIZE", "200"))
     CHUNK_OVERLAP: int = int(os.getenv("CHUNK_OVERLAP", "50"))
-    TOP_K: int = int(os.getenv("TOP_K", "3"))
-    MIN_SIMILARITY: float = float(os.getenv("MIN_SIMILARITY", "0.35"))
+    TOP_K: int = int(os.getenv("TOP_K", "5"))  # Increased from 3 to 5
+    MIN_SIMILARITY: float = float(os.getenv("MIN_SIMILARITY", "0.25"))  # Lowered from 0.35 to 0.25
     MAX_QUERY_LENGTH: int = int(os.getenv("MAX_QUERY_LENGTH", "1000"))
     
     # Response Settings
@@ -40,12 +40,26 @@ class Config:
     CACHE_TTL: int = int(os.getenv("CACHE_TTL", "3600"))  # 1 hour
     MAX_CACHE_SIZE: int = int(os.getenv("MAX_CACHE_SIZE", "1000"))
     
+    # Conversation Settings
+    ENABLE_CONVERSATIONS: bool = os.getenv("ENABLE_CONVERSATIONS", "True").lower() == "true"
+    MAX_CONVERSATION_HISTORY: int = int(os.getenv("MAX_CONVERSATION_HISTORY", "10"))
+    CONVERSATION_TTL: int = int(os.getenv("CONVERSATION_TTL", "86400"))  # 24 hours
+    REQUIRE_USER_ID: bool = os.getenv("REQUIRE_USER_ID", "False").lower() == "true"
+    
     # System Prompt
     SYSTEM_PROMPT: str = os.getenv("SYSTEM_PROMPT", """
-You are a legal assistant. Only answer questions based on the information provided in the retrieved documents.
-If the answer is not in the documents, respond with: "I'm sorry, I don't have enough information to answer that."
-Do not generate answers from your own knowledge or external sources.
-Be precise, helpful, and cite relevant information from the documents when possible.
+You are a helpful assistant for BNGC (also known as Gogel), a real estate company. 
+Your role is to provide accurate information about the company based on the retrieved documents.
+
+When answering questions:
+1. Use the information from the retrieved documents to provide accurate details
+2. For contact information, business details, services, or company information - provide the specific details from the documents
+3. Be helpful and informative about BNGC/Gogel's services, contact information, and business operations
+4. If the specific information is not available in the retrieved documents, then say you don't have that information
+5. Do not refuse to provide publicly available business information like contact details, addresses, or services
+6. Always prioritize the information from the retrieved documents over any general knowledge
+
+Remember: You are representing BNGC/Gogel and should be helpful in providing their business information.
 """).strip()
     
     # Document URLs
@@ -138,7 +152,10 @@ Be precise, helpful, and cite relevant information from the documents when possi
             "MIN_SIMILARITY": cls.MIN_SIMILARITY,
             "ENABLE_STREAMING": cls.ENABLE_STREAMING,
             "MAX_CACHE_SIZE": cls.MAX_CACHE_SIZE,
-            "DOCUMENT_COUNT": len(cls.DOCUMENT_URLS)
+            "DOCUMENT_COUNT": len(cls.DOCUMENT_URLS),
+            "ENABLE_CONVERSATIONS": cls.ENABLE_CONVERSATIONS,
+            "MAX_CONVERSATION_HISTORY": cls.MAX_CONVERSATION_HISTORY,
+            "REQUIRE_USER_ID": cls.REQUIRE_USER_ID
         }
         
         logger.info(f"Configuration loaded: {config_info}")

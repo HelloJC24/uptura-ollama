@@ -17,6 +17,7 @@ from models import document_processor, query_cache
 from services.redis_service import redis_service
 from services.ollama_service import ollama_service
 from services.embedding_service import embedding_service
+from services.conversation_service import conversation_service
 from utils import (
     RAGRetriever, ResponseGenerator, ResponseFormatter, 
     validate_query, sanitize_text, log_request_info,
@@ -101,6 +102,7 @@ def get_stats():
             "performance": performance_monitor.get_stats(),
             "cache": query_cache.get_stats(),
             "documents": document_processor.get_stats(),
+            "conversations": conversation_service.get_service_stats() if Config.ENABLE_CONVERSATIONS else {"enabled": False},
             "services": {
                 "redis": redis_service.get_stats(),
                 "ollama": ollama_service.get_stats(),
@@ -117,7 +119,7 @@ def get_stats():
 @app.route("/ask", methods=["POST"])
 @timing_decorator
 def ask_model():
-    """Main endpoint for asking questions"""
+    """Main endpoint for asking questions with conversation support"""
     start_time = time.time()
     user_ip = request.remote_addr
     
@@ -137,16 +139,35 @@ def ask_model():
         if not is_valid:
             return ResponseFormatter.format_error_response(error_message)
         
+        # Extract user ID (optional unless required by config)
+        user_id = data.get("user_id", "anonymous")
+        if Config.REQUIRE_USER_ID and user_id == "anonymous":
+            return ResponseFormatter.format_error_response("user_id is required")
+        
         # Extract streaming preference (defaults to config setting)
         use_streaming = data.get("streaming", Config.ENABLE_STREAMING)
         
-        logger.info(f"Processing query: '{query[:100]}...' (streaming: {use_streaming})")
+        logger.info(f"Processing query for user {user_id}: '{query[:100]}...' (streaming: {use_streaming})")
+        
+        # Get conversation context if conversations are enabled
+        conversation_messages = []
+        if Config.ENABLE_CONVERSATIONS and user_id != "anonymous":
+            conversation_messages = conversation_service.get_context_messages(user_id, include_system_prompt=False)
+            logger.debug(f"Retrieved {len(conversation_messages)} conversation messages for user {user_id}")
+        
+        # Create cache key that includes user context
+        cache_key = f"{user_id}:{query}" if Config.ENABLE_CONVERSATIONS else query
         
         # Check cache first
-        cached_answer = query_cache.get(query)
+        cached_answer = query_cache.get(cache_key)
         if cached_answer:
             logger.info("Returning cached answer")
             performance_monitor.record_request(time.time() - start_time, cache_hit=True)
+            
+            # Add to conversation history if enabled
+            if Config.ENABLE_CONVERSATIONS and user_id != "anonymous":
+                conversation_service.add_message(user_id, "user", query)
+                conversation_service.add_message(user_id, "assistant", cached_answer)
             
             if use_streaming:
                 def cached_generator():
@@ -167,8 +188,13 @@ def ask_model():
             logger.info("No relevant documents found for query")
             answer = "I'm sorry, I don't have enough information to answer that question."
             
+            # Add to conversation history if enabled
+            if Config.ENABLE_CONVERSATIONS and user_id != "anonymous":
+                conversation_service.add_message(user_id, "user", query)
+                conversation_service.add_message(user_id, "assistant", answer)
+            
             # Cache the result
-            query_cache.set(query, answer)
+            query_cache.set(cache_key, answer)
             performance_monitor.record_request(time.time() - start_time, cache_hit=False)
             
             if use_streaming:
@@ -183,30 +209,44 @@ def ask_model():
         
         logger.info(f"Found {len(relevant_chunks)} relevant chunks, context length: {len(context)} characters")
         
-        # Generate answer
+        # Generate answer with conversation context
         if use_streaming:
             # Streaming response
-            answer_generator = ResponseGenerator.generate_answer(query, context, streaming=True)
+            answer_generator = ResponseGenerator.generate_answer(
+                query, context, conversation_messages, streaming=True
+            )
             
-            # Collect full answer for caching
+            # Collect full answer for caching and conversation history
             def cache_and_stream():
                 full_answer = ""
                 for chunk in answer_generator:
                     full_answer += chunk
                     yield chunk
                 
+                # Add to conversation history if enabled
+                if Config.ENABLE_CONVERSATIONS and user_id != "anonymous":
+                    conversation_service.add_message(user_id, "user", query)
+                    conversation_service.add_message(user_id, "assistant", full_answer)
+                
                 # Cache the complete answer
-                query_cache.set(query, full_answer)
+                query_cache.set(cache_key, full_answer)
                 performance_monitor.record_request(time.time() - start_time, cache_hit=False)
             
             return ResponseFormatter.format_streaming_response(cache_and_stream())
         
         else:
             # Direct response
-            answer = ResponseGenerator.generate_answer(query, context, streaming=False)
+            answer = ResponseGenerator.generate_answer(
+                query, context, conversation_messages, streaming=False
+            )
+            
+            # Add to conversation history if enabled
+            if Config.ENABLE_CONVERSATIONS and user_id != "anonymous":
+                conversation_service.add_message(user_id, "user", query)
+                conversation_service.add_message(user_id, "assistant", answer)
             
             # Cache the result
-            query_cache.set(query, answer)
+            query_cache.set(cache_key, answer)
             performance_monitor.record_request(time.time() - start_time, cache_hit=False)
             
             return ResponseFormatter.format_direct_response(answer)
@@ -330,6 +370,177 @@ def clear_cache():
         logger.error(f"Error clearing cache: {e}")
         return ResponseFormatter.format_error_response("Failed to clear cache", 500)
 
+@app.route("/conversations/<user_id>/history", methods=["GET"])
+def get_conversation_history(user_id: str):
+    """Get conversation history for a user"""
+    logger.debug(f"Conversation history requested for user: {user_id}")
+    
+    try:
+        if not Config.ENABLE_CONVERSATIONS:
+            return ResponseFormatter.format_error_response("Conversations are disabled", 400)
+        
+        # Get optional limit parameter
+        limit = request.args.get('limit', type=int)
+        
+        history = conversation_service.get_conversation_history(user_id, limit)
+        stats = conversation_service.get_conversation_stats(user_id)
+        
+        return jsonify({
+            "status": "success",
+            "user_id": user_id,
+            "history": history,
+            "stats": stats
+        }), 200
+        
+    except Exception as e:
+        logger.error(f"Error getting conversation history for user {user_id}: {e}")
+        return ResponseFormatter.format_error_response("Failed to retrieve conversation history", 500)
+
+@app.route("/conversations/<user_id>/clear", methods=["POST"])
+def clear_conversation_history(user_id: str):
+    """Clear conversation history for a user"""
+    logger.info(f"Clearing conversation history for user: {user_id}")
+    
+    try:
+        if not Config.ENABLE_CONVERSATIONS:
+            return ResponseFormatter.format_error_response("Conversations are disabled", 400)
+        
+        success = conversation_service.clear_conversation(user_id)
+        
+        if success:
+            return jsonify({
+                "status": "success",
+                "message": f"Conversation history cleared for user: {user_id}"
+            }), 200
+        else:
+            return ResponseFormatter.format_error_response("Failed to clear conversation history", 500)
+        
+    except Exception as e:
+        logger.error(f"Error clearing conversation for user {user_id}: {e}")
+        return ResponseFormatter.format_error_response("Failed to clear conversation history", 500)
+
+@app.route("/conversations", methods=["GET"])
+def list_conversations():
+    """List all active conversations"""
+    logger.debug("Listing all active conversations")
+    
+    try:
+        if not Config.ENABLE_CONVERSATIONS:
+            return ResponseFormatter.format_error_response("Conversations are disabled", 400)
+        
+        active_users = conversation_service.list_active_conversations()
+        service_stats = conversation_service.get_service_stats()
+        
+        return jsonify({
+            "status": "success",
+            "active_conversations": active_users,
+            "total_count": len(active_users),
+            "service_stats": service_stats
+        }), 200
+        
+    except Exception as e:
+        logger.error(f"Error listing conversations: {e}")
+        return ResponseFormatter.format_error_response("Failed to list conversations", 500)
+
+@app.route("/conversations/cleanup", methods=["POST"])
+def cleanup_conversations():
+    """Clean up expired conversations"""
+    logger.info("Manual conversation cleanup requested")
+    
+    try:
+        if not Config.ENABLE_CONVERSATIONS:
+            return ResponseFormatter.format_error_response("Conversations are disabled", 400)
+        
+        cleaned_count = conversation_service.cleanup_expired_conversations()
+        
+        return jsonify({
+            "status": "success",
+            "message": f"Cleaned up {cleaned_count} expired conversations",
+            "cleaned_count": cleaned_count
+        }), 200
+        
+    except Exception as e:
+        logger.error(f"Error during conversation cleanup: {e}")
+        return ResponseFormatter.format_error_response("Failed to cleanup conversations", 500)
+
+@app.route("/debug/query", methods=["POST"])
+def debug_query():
+    """Debug endpoint to see what's happening with query processing"""
+    try:
+        data = request.get_json()
+        if not data:
+            return ResponseFormatter.format_error_response("Invalid JSON in request body")
+        
+        query = data.get("query", "")
+        if not query:
+            return ResponseFormatter.format_error_response("Query is required")
+        
+        logger.info(f"Debug query: {query}")
+        
+        # Check if RAG retriever is ready
+        if not rag_retriever:
+            return jsonify({
+                "error": "RAG retriever not initialized",
+                "total_chunks": 0
+            }), 503
+        
+        # Get embeddings and similarity scores
+        query_embedding = embedding_service.get_embedding(query)
+        if not query_embedding:
+            return jsonify({
+                "error": "Failed to generate query embedding",
+                "total_chunks": len(rag_retriever.chunks)
+            }), 500
+        
+        # Calculate similarities for all chunks
+        similarities = []
+        for i, chunk in enumerate(rag_retriever.chunks):
+            if chunk.embedding:
+                similarity = embedding_service.calculate_similarity(query_embedding, chunk.embedding)
+                similarities.append({
+                    "index": i,
+                    "similarity": round(similarity, 4),
+                    "source_url": chunk.source_url,
+                    "text_preview": chunk.text[:200] + "..." if len(chunk.text) > 200 else chunk.text
+                })
+        
+        # Sort by similarity
+        similarities.sort(key=lambda x: x["similarity"], reverse=True)
+        
+        # Get relevant chunks using current settings
+        relevant_chunks = rag_retriever.retrieve_relevant_chunks(query)
+        
+        debug_info = {
+            "query": query,
+            "query_embedding_length": len(query_embedding),
+            "total_chunks": len(rag_retriever.chunks),
+            "config": {
+                "top_k": Config.TOP_K,
+                "min_similarity": Config.MIN_SIMILARITY,
+                "chunk_size": Config.CHUNK_SIZE,
+                "system_prompt_preview": Config.SYSTEM_PROMPT[:200] + "..."
+            },
+            "top_similarities": similarities[:10],  # Top 10 similarities
+            "relevant_chunks_found": len(relevant_chunks),
+            "relevant_chunks": [
+                {
+                    "similarity": "N/A",  # We'd need to recalculate
+                    "source_url": chunk.source_url,
+                    "text_preview": chunk.text[:200] + "..." if len(chunk.text) > 200 else chunk.text
+                }
+                for chunk in relevant_chunks
+            ],
+            "chunks_above_threshold": len([s for s in similarities if s["similarity"] >= Config.MIN_SIMILARITY]),
+            "max_similarity": similarities[0]["similarity"] if similarities else 0,
+            "min_similarity_threshold": Config.MIN_SIMILARITY
+        }
+        
+        return jsonify(debug_info), 200
+        
+    except Exception as e:
+        logger.error(f"Error in debug query: {e}", exc_info=True)
+        return ResponseFormatter.format_error_response(f"Debug error: {str(e)}", 500)
+
 @app.route("/reload-documents", methods=["POST"])
 def reload_documents():
     """Reload documents from configured URLs"""
@@ -377,11 +588,21 @@ def initialize_app():
     logger.info("Application initialization completed!")
     logger.info(f"API will be available at http://{Config.HOST}:{Config.PORT}")
     logger.info("Available endpoints:")
-    logger.info("  POST /ask - Ask questions")
+    logger.info("  POST /ask - Ask questions (with optional user_id for conversations)")
+    logger.info("  POST /stream - Optimized streaming questions")
     logger.info("  GET  /health - Health check")
     logger.info("  GET  /stats - System statistics")
     logger.info("  POST /clear-cache - Clear cache")
     logger.info("  POST /reload-documents - Reload documents")
+    
+    if Config.ENABLE_CONVERSATIONS:
+        logger.info("  GET  /conversations - List all active conversations")
+        logger.info("  GET  /conversations/<user_id>/history - Get user conversation history")
+        logger.info("  POST /conversations/<user_id>/clear - Clear user conversation")
+        logger.info("  POST /conversations/cleanup - Clean up expired conversations")
+        logger.info(f"  Conversations enabled: max {Config.MAX_CONVERSATION_HISTORY} messages, TTL {Config.CONVERSATION_TTL}s")
+    else:
+        logger.info("  Conversations are disabled")
 
 if __name__ == "__main__":
     try:

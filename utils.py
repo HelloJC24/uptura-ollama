@@ -31,7 +31,9 @@ class RAGRetriever:
         top_k = top_k or Config.TOP_K
         min_similarity = min_similarity or Config.MIN_SIMILARITY
         
-        logger.debug(f"Retrieving relevant chunks for query: '{query[:50]}...'")
+        logger.info(f"Retrieving relevant chunks for query: '{query[:50]}...'")
+        logger.info(f"Total available chunks: {len(self.chunks)}")
+        logger.info(f"Using top_k={top_k}, min_similarity={min_similarity}")
         start_time = time.time()
         
         # Get query embedding
@@ -42,30 +44,42 @@ class RAGRetriever:
         
         # Calculate similarities
         similarities = []
-        for chunk in self.chunks:
+        for i, chunk in enumerate(self.chunks):
             if chunk.embedding:
                 similarity = embedding_service.calculate_similarity(query_embedding, chunk.embedding)
                 similarities.append((similarity, chunk))
+                logger.debug(f"Chunk {i} from {chunk.source_url}: similarity={similarity:.3f}")
             else:
                 similarities.append((0.0, chunk))
         
         # Sort by similarity and filter
         similarities.sort(key=lambda x: x[0], reverse=True)
         
+        logger.info(f"Top similarities found:")
+        for i, (similarity, chunk) in enumerate(similarities[:5]):  # Log top 5
+            logger.info(f"  {i+1}. Similarity: {similarity:.3f} from {chunk.source_url}")
+            logger.info(f"     Text preview: {chunk.text[:100]}...")
+        
         relevant_chunks = []
         for similarity, chunk in similarities[:top_k]:
             if similarity >= min_similarity:
                 relevant_chunks.append(chunk)
-                logger.debug(f"Selected chunk with similarity {similarity:.3f} from {chunk.source_url}")
+                logger.info(f"Selected chunk with similarity {similarity:.3f} from {chunk.source_url}")
+            else:
+                logger.warning(f"Rejected chunk with similarity {similarity:.3f} (below threshold {min_similarity})")
         
         retrieval_time = time.time() - start_time
         logger.info(f"Retrieved {len(relevant_chunks)} relevant chunks in {retrieval_time:.3f}s")
+        
+        if not relevant_chunks:
+            logger.warning("No chunks met the similarity threshold - consider lowering MIN_SIMILARITY")
         
         return relevant_chunks
     
     def create_context(self, chunks: List[DocumentChunk]) -> str:
         """Create context string from relevant chunks"""
         if not chunks:
+            logger.warning("No chunks provided for context creation")
             return ""
         
         context_parts = []
@@ -74,7 +88,8 @@ class RAGRetriever:
             context_parts.append(f"{source_info}\n{chunk.text}")
         
         context = "\n\n---\n\n".join(context_parts)
-        logger.debug(f"Created context with {len(context)} characters from {len(chunks)} chunks")
+        logger.info(f"Created context with {len(context)} characters from {len(chunks)} chunks")
+        logger.debug(f"Context preview: {context[:500]}...")
         
         return context
 
@@ -82,21 +97,30 @@ class ResponseGenerator:
     """Handles response generation with streaming support"""
     
     @staticmethod
-    def generate_answer(query: str, context: str, streaming: bool = None) -> str:
-        """Generate answer using Ollama"""
+    def generate_answer(query: str, context: str, conversation_messages: List[Dict[str, str]] = None, streaming: bool = None) -> str:
+        """Generate answer using Ollama with conversation context"""
         streaming = streaming if streaming is not None else Config.ENABLE_STREAMING
         
         if not context.strip():
             return "I'm sorry, I don't have enough information to answer that question."
         
-        # Construct messages
-        system_message = f"{Config.SYSTEM_PROMPT}\n\nContext:\n{context}"
-        messages = [
-            {"role": "system", "content": system_message},
-            {"role": "user", "content": query}
-        ]
+        # Build messages with conversation history
+        messages = []
         
-        logger.info(f"Generating {'streaming' if streaming else 'non-streaming'} answer")
+        # Add system prompt with RAG context
+        system_content = f"{Config.SYSTEM_PROMPT}\n\nRelevant Information:\n{context}"
+        messages.append({"role": "system", "content": system_content})
+        
+        # Add conversation history (excluding system messages)
+        if conversation_messages:
+            for msg in conversation_messages:
+                if msg.get("role") != "system":  # Skip system messages from history
+                    messages.append(msg)
+        
+        # Add current query
+        messages.append({"role": "user", "content": query})
+        
+        logger.info(f"Generating {'streaming' if streaming else 'non-streaming'} answer with {len(messages)} messages in context")
         
         if streaming:
             return ResponseGenerator._generate_streaming_answer(messages)

@@ -16,6 +16,108 @@ from services.redis_service import redis_service
 logger = logging.getLogger(__name__)
 
 @dataclass
+class ConversationMessage:
+    """Represents a single message in a conversation"""
+    role: str  # 'user' or 'assistant'
+    content: str
+    timestamp: datetime = field(default_factory=datetime.now)
+    
+    def to_dict(self) -> Dict[str, Any]:
+        """Convert to dictionary for storage"""
+        return {
+            "role": self.role,
+            "content": self.content,
+            "timestamp": self.timestamp.isoformat()
+        }
+    
+    @classmethod
+    def from_dict(cls, data: Dict[str, Any]) -> 'ConversationMessage':
+        """Create from dictionary"""
+        return cls(
+            role=data["role"],
+            content=data["content"],
+            timestamp=datetime.fromisoformat(data.get("timestamp", datetime.now().isoformat()))
+        )
+
+@dataclass
+class UserConversation:
+    """Represents a user's conversation history"""
+    user_id: str
+    messages: List[ConversationMessage] = field(default_factory=list)
+    created_at: datetime = field(default_factory=datetime.now)
+    last_updated: datetime = field(default_factory=datetime.now)
+    
+    def add_message(self, role: str, content: str) -> None:
+        """Add a message to the conversation"""
+        message = ConversationMessage(role=role, content=content)
+        self.messages.append(message)
+        self.last_updated = datetime.now()
+        
+        # Keep only the last N messages
+        max_history = Config.MAX_CONVERSATION_HISTORY
+        if len(self.messages) > max_history:
+            self.messages = self.messages[-max_history:]
+    
+    def get_context_messages(self) -> List[Dict[str, str]]:
+        """Get messages in format suitable for LLM context"""
+        return [{"role": msg.role, "content": msg.content} for msg in self.messages]
+    
+    def get_recent_messages(self, count: int = None) -> List[ConversationMessage]:
+        """Get the most recent messages"""
+        count = count or Config.MAX_CONVERSATION_HISTORY
+        return self.messages[-count:] if self.messages else []
+    
+    def clear_history(self) -> None:
+        """Clear all conversation history"""
+        self.messages.clear()
+        self.last_updated = datetime.now()
+    
+    def to_dict(self) -> Dict[str, Any]:
+        """Convert to dictionary for storage"""
+        return {
+            "user_id": self.user_id,
+            "messages": [msg.to_dict() for msg in self.messages],
+            "created_at": self.created_at.isoformat(),
+            "last_updated": self.last_updated.isoformat()
+        }
+    
+    @classmethod
+    def from_dict(cls, data: Dict[str, Any]) -> 'UserConversation':
+        """Create from dictionary"""
+        conversation = cls(
+            user_id=data["user_id"],
+            created_at=datetime.fromisoformat(data.get("created_at", datetime.now().isoformat())),
+            last_updated=datetime.fromisoformat(data.get("last_updated", datetime.now().isoformat()))
+        )
+        
+        # Load messages
+        for msg_data in data.get("messages", []):
+            message = ConversationMessage.from_dict(msg_data)
+            conversation.messages.append(message)
+        
+        return conversation
+    
+    def is_expired(self) -> bool:
+        """Check if conversation has expired"""
+        ttl_seconds = Config.CONVERSATION_TTL
+        expiry_time = self.last_updated + timedelta(seconds=ttl_seconds)
+        return datetime.now() > expiry_time
+    
+    def get_stats(self) -> Dict[str, Any]:
+        """Get conversation statistics"""
+        user_messages = [msg for msg in self.messages if msg.role == 'user']
+        assistant_messages = [msg for msg in self.messages if msg.role == 'assistant']
+        
+        return {
+            "total_messages": len(self.messages),
+            "user_messages": len(user_messages),
+            "assistant_messages": len(assistant_messages),
+            "created_at": self.created_at.isoformat(),
+            "last_updated": self.last_updated.isoformat(),
+            "is_expired": self.is_expired()
+        }
+
+@dataclass
 class DocumentChunk:
     """Represents a chunk of a document with its embedding"""
     text: str

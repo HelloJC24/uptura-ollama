@@ -2,19 +2,27 @@
 
 A robust Retrieval-Augmented Generation (RAG) API built with Flask, featuring comprehensive logging, performance optimization, configurable streaming, and modular architecture.
 
-## 🚀 New Features & Improvements
+## 🚀 **New Features & Improvements**
 
 ### Architecture Improvements
 - **Modular Design**: Separated concerns into distinct modules (`config.py`, `models.py`, `services/`, `utils.py`)
-- **Service Layer**: Dedicated services for Redis, Ollama, and embedding operations
+- **Service Layer**: Dedicated services for Redis, Ollama, embedding, and conversation operations
 - **Configuration Management**: Environment variable support with validation
 - **Error Handling**: Comprehensive error handling throughout the application
+
+### Conversation System 🗣️
+- **User Conversations**: Maintain conversation history per user with configurable limits
+- **Context Awareness**: Responses include previous conversation context
+- **Automatic Management**: Configurable TTL and cleanup of old conversations
+- **User Identification**: Support for user-specific conversations via `user_id`
+- **Memory Limit**: Configurable conversation history (default: 10 messages)
 
 ### Performance Optimizations
 - **LRU Caching**: Intelligent caching with TTL and memory management
 - **Batch Processing**: Efficient batch embedding generation
 - **Connection Pooling**: Optimized Redis connections with health checks
 - **Background Processing**: Document loading and model warmup in background threads
+- **Contextual Caching**: Cache keys include user context for personalized responses
 
 ### Enhanced RAG System
 - **Improved Chunking**: Configurable chunk size with overlap for better context
@@ -93,16 +101,23 @@ All configuration is managed through environment variables. Key settings include
 - `CACHE_TTL`: Cache time-to-live in seconds (default: 3600)
 - `MAX_CACHE_SIZE`: Maximum cache entries (default: 1000)
 
+### Conversation Configuration
+- `ENABLE_CONVERSATIONS`: Enable/disable conversation features (default: True)
+- `MAX_CONVERSATION_HISTORY`: Maximum messages per conversation (default: 10)
+- `CONVERSATION_TTL`: Conversation expiry time in seconds (default: 86400 = 24 hours)
+- `REQUIRE_USER_ID`: Whether user_id is required for all requests (default: False)
+
 ## 📡 API Endpoints
 
 ### POST /ask
-Ask questions to the RAG system.
+Ask questions to the RAG system with optional conversation history.
 
 **Request:**
 ```json
 {
-    "query": "Your question here",
-    "streaming": true  // Optional: override global streaming setting
+    "query": "do you know Gogel?",
+    "user_id": "user@gmail.com",  // Optional: for conversation history
+    "streaming": true             // Optional: override global streaming setting
 }
 ```
 
@@ -110,11 +125,26 @@ Ask questions to the RAG system.
 ```
 data: {"status": "connected"}
 
-data: {"answer": "Partial response chunk"}
-
-data: {"answer": " continues here..."}
+data: {"answer": "Yes, I am aware of Gogel..."}
 
 data: {"status": "complete"}
+```
+
+**Conversation Flow Example:**
+```json
+// First question
+{
+    "query": "do you know Gogel?",
+    "user_id": "user@gmail.com"
+}
+// Response: "Yes, Gogel is a real estate firm..."
+
+// Follow-up question (will include previous context)
+{
+    "query": "What services do they offer?",
+    "user_id": "user@gmail.com" 
+}
+// Response: "Based on our previous discussion about Gogel, they offer..."
 ```
 
 ### POST /stream (Optimized for Real-time Streaming)
@@ -179,25 +209,77 @@ curl -X POST http://localhost:5000/stream \
 
 4. **Use the `/stream` endpoint** instead of `/ask` for real-time streaming
 
-### GET /health
-Health check endpoint.
+### GET /conversations
+List all active conversations.
 
 **Response:**
 ```json
 {
-    "status": "healthy",
-    "timestamp": 1635789456.789,
-    "services": {
-        "redis": true,
-        "ollama": true,
-        "embeddings": true
-    },
-    "config": {
-        "streaming_enabled": true,
-        "model": "phi3:mini",
-        "top_k": 3,
-        "min_similarity": 0.35
+    "status": "success",
+    "active_conversations": ["user@gmail.com", "another@user.com"],
+    "total_count": 2,
+    "service_stats": {
+        "local_cache_size": 5,
+        "active_conversations": 2,
+        "max_history": 10,
+        "conversations_enabled": true
     }
+}
+```
+
+### GET /conversations/<user_id>/history
+Get conversation history for a specific user.
+
+**Parameters:**
+- `limit` (optional): Maximum number of messages to return
+
+**Response:**
+```json
+{
+    "status": "success",
+    "user_id": "user@gmail.com",
+    "history": [
+        {
+            "role": "user",
+            "content": "do you know Gogel?",
+            "timestamp": "2025-10-28T10:30:00Z"
+        },
+        {
+            "role": "assistant", 
+            "content": "Yes, Gogel is a real estate firm...",
+            "timestamp": "2025-10-28T10:30:15Z"
+        }
+    ],
+    "stats": {
+        "total_messages": 4,
+        "user_messages": 2,
+        "assistant_messages": 2,
+        "created_at": "2025-10-28T10:30:00Z",
+        "last_updated": "2025-10-28T10:35:00Z"
+    }
+}
+```
+
+### POST /conversations/<user_id>/clear
+Clear conversation history for a specific user.
+
+**Response:**
+```json
+{
+    "status": "success",
+    "message": "Conversation history cleared for user: user@gmail.com"
+}
+```
+
+### POST /conversations/cleanup
+Clean up all expired conversations.
+
+**Response:**
+```json
+{
+    "status": "success",
+    "message": "Cleaned up 3 expired conversations",
+    "cleaned_count": 3
 }
 ```
 
