@@ -2,3 +2,6 @@
 .env.example
 .env.fast
 .env*
+__pycache__/
+.vscode/
+
