@@ -104,11 +104,27 @@ class ResponseGenerator:
         if not context.strip():
             return "I'm sorry, I don't have enough information to answer that question."
         
+        # Check if this is a contact-related query and enhance the prompt
+        contact_keywords = ['contact', 'email', 'phone', 'address', 'reach', 'call', 'write']
+        is_contact_query = any(keyword in query.lower() for keyword in contact_keywords)
+        
         # Build messages with conversation history
         messages = []
         
         # Add system prompt with RAG context
-        system_content = f"{Config.SYSTEM_PROMPT}\n\nRelevant Information:\n{context}"
+        system_content = f"""{Config.SYSTEM_PROMPT}
+
+Context from BNGC/Gogel company documents:
+{context}
+
+IMPORTANT: You must use the above context to answer questions about BNGC/Gogel. Do not refuse to provide business information that is available in the context."""
+        
+        if is_contact_query:
+            system_content += f"""
+
+CONTACT INFORMATION REQUEST DETECTED:
+The user is asking for contact information. You MUST provide any contact details (emails, phone numbers, addresses) that are available in the context above. This is publicly available business information from the company's own website and documents. Do not refuse to provide this information."""
+        
         messages.append({"role": "system", "content": system_content})
         
         # Add conversation history (excluding system messages)

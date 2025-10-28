@@ -3,6 +3,7 @@ Ollama service for LLM interactions
 """
 import logging
 import time
+import threading
 from typing import Dict, Any, Generator, Optional, List
 from ollama import Client
 from config import Config
@@ -16,8 +17,11 @@ class OllamaService:
         self.client: Optional[Client] = None
         self.is_connected = False
         self.model_name = Config.OLLAMA_MODEL
+        self.is_warmed_up = False
+        self.warmup_in_progress = False
         self._connect()
-        self._warmup()
+        # Start warmup in background thread to not block initialization
+        self._async_warmup()
     
     def _connect(self) -> None:
         """Initialize Ollama client"""
@@ -32,27 +36,78 @@ class OllamaService:
             self.is_connected = False
             self.client = None
     
-    def _warmup(self) -> None:
-        """Warm up the model with a simple query"""
+    def _async_warmup(self) -> None:
+        """Start warmup in background thread"""
         if not self.is_available():
-            logger.warning("Ollama not available for warmup")
+            logger.warning("Ollama not available for async warmup")
             return
         
-        logger.info(f"Warming up Ollama model: {self.model_name}")
+        def warmup_thread():
+            self.warmup_in_progress = True
+            logger.info(f"Starting background warmup for model: {self.model_name}")
+            
+            try:
+                start_time = time.time()
+                # Use a very simple prompt for faster warmup
+                response = self.client.chat(
+                    model=self.model_name,
+                    messages=[{"role": "user", "content": "Hi"}],
+                    options={
+                        "temperature": 0.1,
+                        "num_predict": 5,  # Limit to just a few tokens
+                        "num_ctx": 512     # Smaller context for warmup
+                    }
+                )
+                
+                warmup_time = time.time() - start_time
+                self.is_warmed_up = True
+                logger.info(f"Background model warmup completed in {warmup_time:.2f}s")
+                
+            except Exception as e:
+                logger.error(f"Background model warmup failed: {e}")
+            finally:
+                self.warmup_in_progress = False
         
+        # Start warmup in daemon thread
+        warmup_thread = threading.Thread(target=warmup_thread, daemon=True)
+        warmup_thread.start()
+    
+    def ensure_warmup(self) -> None:
+        """Ensure model is warmed up before processing requests"""
+        if self.is_warmed_up:
+            return
+        
+        if self.warmup_in_progress:
+            logger.info("Waiting for background warmup to complete...")
+            # Wait up to 10 seconds for warmup to complete
+            max_wait = 10
+            wait_time = 0
+            while self.warmup_in_progress and wait_time < max_wait:
+                time.sleep(0.5)
+                wait_time += 0.5
+            
+            if self.is_warmed_up:
+                logger.info("Background warmup completed successfully")
+                return
+        
+        # If warmup hasn't completed or failed, do a quick inline warmup
+        logger.info("Performing quick inline warmup...")
         try:
             start_time = time.time()
             response = self.client.chat(
                 model=self.model_name,
-                messages=[{"role": "user", "content": "Hello"}],
-                options={"temperature": 0.1}
+                messages=[{"role": "user", "content": "OK"}],
+                options={
+                    "temperature": 0.1,
+                    "num_predict": 1,  # Just one token
+                    "num_ctx": 256     # Minimal context
+                }
             )
-            
             warmup_time = time.time() - start_time
-            logger.info(f"Model warmup completed in {warmup_time:.2f}s")
-            
+            self.is_warmed_up = True
+            logger.info(f"Quick inline warmup completed in {warmup_time:.2f}s")
         except Exception as e:
-            logger.error(f"Model warmup failed: {e}")
+            logger.error(f"Quick inline warmup failed: {e}")
     
     def is_available(self) -> bool:
         """Check if Ollama service is available"""
@@ -61,8 +116,9 @@ class OllamaService:
         
         try:
             # Try to list models as a health check
-            models = self.client.list()
-            return True
+            models_response = self.client.list()
+            # Just check if we got a response, don't parse it here
+            return models_response is not None
         except Exception as e:
             logger.warning(f"Ollama health check failed: {e}")
             self.is_connected = False
@@ -74,6 +130,9 @@ class OllamaService:
             logger.error("Ollama not available for chat")
             return None
         
+        # Ensure model is warmed up before processing
+        self.ensure_warmup()
+        
         try:
             logger.debug(f"Sending chat request to Ollama with {len(messages)} messages")
             start_time = time.time()
@@ -84,7 +143,11 @@ class OllamaService:
                 options={
                     "temperature": temperature,
                     "top_p": 0.9,
-                    "top_k": 40
+                    "top_k": 40,
+                    "num_ctx": 4096,        # Adequate context window
+                    "num_predict": 2048,    # Limit max tokens for faster response
+                    "repeat_penalty": 1.1,
+                    "tfs_z": 1.0
                 }
             )
             
@@ -105,6 +168,9 @@ class OllamaService:
             yield "Error: Ollama service unavailable"
             return
         
+        # Ensure model is warmed up before processing
+        self.ensure_warmup()
+        
         try:
             logger.debug(f"Starting streaming chat with Ollama")
             start_time = time.time()
@@ -118,8 +184,8 @@ class OllamaService:
                     "temperature": temperature,
                     "top_p": 0.9,
                     "top_k": 40,
-                    "num_predict": -1,  # Generate until natural stop
-                    "num_ctx": 4096,    # Context window
+                    "num_predict": 2048,    # Limit max tokens for faster response
+                    "num_ctx": 4096,        # Context window
                     "repeat_penalty": 1.1,
                     "tfs_z": 1.0
                 }
@@ -133,8 +199,8 @@ class OllamaService:
                         total_chunks += 1
                         yield content
                         
-                        # Add small delay to prevent overwhelming the client
-                        time.sleep(0.01)  # 10ms delay between chunks
+                        # Minimal delay to prevent overwhelming but keep speed
+                        time.sleep(0.005)  # Reduced to 5ms delay
             
             response_time = time.time() - start_time
             logger.info(f"Streaming completed in {response_time:.2f}s, {total_chunks} chunks")
@@ -150,17 +216,57 @@ class OllamaService:
         
         try:
             models_response = self.client.list()
-            models = [model['name'] for model in models_response.get('models', [])]
+            logger.debug(f"Raw models response: {models_response}")
+            
+            # Handle different response structures
+            if isinstance(models_response, dict):
+                if 'models' in models_response:
+                    models_list = models_response['models']
+                else:
+                    models_list = models_response
+            else:
+                models_list = models_response
+            
+            # Extract model names safely
+            models = []
+            for model in models_list:
+                if isinstance(model, dict):
+                    # Try different possible keys for model name
+                    model_name = model.get('name') or model.get('model') or model.get('id') or str(model)
+                    models.append(model_name)
+                elif isinstance(model, str):
+                    models.append(model)
+                else:
+                    logger.warning(f"Unexpected model format: {type(model)} - {model}")
+                    models.append(str(model))
+            
             logger.debug(f"Available models: {models}")
             return models
+            
         except Exception as e:
             logger.error(f"Error getting models: {e}")
+            logger.debug(f"Exception details:", exc_info=True)
             return []
     
     def check_model_exists(self, model_name: str = None) -> bool:
         """Check if specified model exists"""
         model_to_check = model_name or self.model_name
         available_models = self.get_models()
+        
+        # If we couldn't get models list, try a different approach
+        if not available_models:
+            logger.warning("Could not retrieve models list, trying direct model check")
+            try:
+                # Try to use the model directly with a simple prompt
+                test_response = self.client.chat(
+                    model=model_to_check,
+                    messages=[{"role": "user", "content": "test"}],
+                    options={"max_tokens": 1}
+                )
+                return test_response is not None
+            except Exception as e:
+                logger.error(f"Direct model check failed for {model_to_check}: {e}")
+                return False
         
         # Check exact match or partial match
         for model in available_models:

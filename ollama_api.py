@@ -8,6 +8,7 @@ import threading
 import time
 import logging
 import json
+from datetime import datetime
 from typing import Dict, Any, Optional
 from flask import Flask, request, jsonify, Response
 
@@ -38,6 +39,21 @@ Config.log_config()
 
 # Initialize Flask app
 app = Flask(Config.APP_NAME)
+
+# Add request timing middleware
+@app.before_request
+def before_request():
+    """Log request start time"""
+    request.start_time = time.time()
+    logger.info(f"Request started: {request.method} {request.path}")
+
+@app.after_request
+def after_request(response):
+    """Log request completion time"""
+    if hasattr(request, 'start_time'):
+        duration = time.time() - request.start_time
+        logger.info(f"Request completed: {request.method} {request.path} - {response.status_code} in {duration:.3f}s")
+    return response
 
 # Global RAG retriever instance
 rag_retriever: Optional[RAGRetriever] = None
@@ -123,6 +139,9 @@ def ask_model():
     start_time = time.time()
     user_ip = request.remote_addr
     
+    # Immediate logging to show request was received
+    logger.info(f"=== ASK REQUEST RECEIVED at {time.strftime('%H:%M:%S.%f')[:-3]} from {user_ip} ===")
+    
     try:
         # Get and validate request data
         data = request.get_json()
@@ -150,16 +169,23 @@ def ask_model():
         logger.info(f"Processing query for user {user_id}: '{query[:100]}...' (streaming: {use_streaming})")
         
         # Get conversation context if conversations are enabled
+        context_start = time.time()
         conversation_messages = []
         if Config.ENABLE_CONVERSATIONS and user_id != "anonymous":
             conversation_messages = conversation_service.get_context_messages(user_id, include_system_prompt=False)
             logger.debug(f"Retrieved {len(conversation_messages)} conversation messages for user {user_id}")
+        context_time = time.time() - context_start
+        logger.debug(f"Conversation context retrieval took {context_time:.3f}s")
         
         # Create cache key that includes user context
         cache_key = f"{user_id}:{query}" if Config.ENABLE_CONVERSATIONS else query
         
         # Check cache first
+        cache_start = time.time()
         cached_answer = query_cache.get(cache_key)
+        cache_time = time.time() - cache_start
+        logger.debug(f"Cache check took {cache_time:.3f}s")
+        
         if cached_answer:
             logger.info("Returning cached answer")
             performance_monitor.record_request(time.time() - start_time, cache_hit=True)
@@ -182,7 +208,10 @@ def ask_model():
             return ResponseFormatter.format_error_response("System is still initializing. Please try again in a moment.", 503)
         
         # Retrieve relevant documents
+        retrieval_start = time.time()
         relevant_chunks = rag_retriever.retrieve_relevant_chunks(query)
+        retrieval_time = time.time() - retrieval_start
+        logger.info(f"Document retrieval took {retrieval_time:.3f}s, found {len(relevant_chunks)} chunks")
         
         if not relevant_chunks:
             logger.info("No relevant documents found for query")
@@ -205,11 +234,14 @@ def ask_model():
                 return ResponseFormatter.format_direct_response(answer)
         
         # Create context from relevant chunks
+        context_build_start = time.time()
         context = rag_retriever.create_context(relevant_chunks)
+        context_build_time = time.time() - context_build_start
         
-        logger.info(f"Found {len(relevant_chunks)} relevant chunks, context length: {len(context)} characters")
+        logger.info(f"Context building took {context_build_time:.3f}s, context length: {len(context)} characters")
         
         # Generate answer with conversation context
+        generation_start = time.time()
         if use_streaming:
             # Streaming response
             answer_generator = ResponseGenerator.generate_answer(
@@ -541,6 +573,81 @@ def debug_query():
         logger.error(f"Error in debug query: {e}", exc_info=True)
         return ResponseFormatter.format_error_response(f"Debug error: {str(e)}", 500)
 
+@app.route("/debug/contact", methods=["POST"])
+def debug_contact():
+    """Debug endpoint specifically for contact-related queries"""
+    try:
+        data = request.get_json()
+        if not data:
+            return ResponseFormatter.format_error_response("Invalid JSON in request body")
+        
+        query = data.get("query", "contact information")
+        logger.info(f"Debug contact query: {query}")
+        
+        # Check if RAG retriever is ready
+        if not rag_retriever:
+            return jsonify({
+                "error": "RAG retriever not initialized",
+                "total_chunks": 0
+            }), 503
+        
+        # Get embeddings and similarity scores
+        query_embedding = embedding_service.get_embedding(query)
+        if not query_embedding:
+            return jsonify({
+                "error": "Failed to generate query embedding",
+                "total_chunks": len(rag_retriever.chunks)
+            }), 500
+        
+        # Calculate similarities for all chunks, looking specifically for contact info
+        contact_keywords = ['contact', 'email', 'phone', 'address', 'call', 'write', '@', 'tel:', 'mailto:']
+        contact_chunks = []
+        
+        for i, chunk in enumerate(rag_retriever.chunks):
+            if chunk.embedding:
+                similarity = embedding_service.calculate_similarity(query_embedding, chunk.embedding)
+                
+                # Check if chunk contains potential contact information
+                has_contact_info = any(keyword in chunk.text.lower() for keyword in contact_keywords)
+                
+                chunk_info = {
+                    "index": i,
+                    "similarity": round(similarity, 4),
+                    "source_url": chunk.source_url,
+                    "text_preview": chunk.text[:400] + "..." if len(chunk.text) > 400 else chunk.text,
+                    "has_contact_keywords": has_contact_info,
+                    "above_threshold": similarity >= Config.MIN_SIMILARITY
+                }
+                
+                if has_contact_info or similarity >= Config.MIN_SIMILARITY:
+                    contact_chunks.append(chunk_info)
+        
+        # Sort by similarity
+        contact_chunks.sort(key=lambda x: x["similarity"], reverse=True)
+        
+        # Get the actual context that would be used
+        context = RAGRetriever.build_context(rag_retriever.retrieve_relevant_chunks(query))
+        
+        debug_info = {
+            "query": query,
+            "config": {
+                "min_similarity": Config.MIN_SIMILARITY,
+                "top_k": Config.TOP_K
+            },
+            "total_chunks": len(rag_retriever.chunks),
+            "contact_related_chunks": len(contact_chunks),
+            "chunks_above_threshold": len([c for c in contact_chunks if c["above_threshold"]]),
+            "top_contact_chunks": contact_chunks[:10],
+            "context_used": context[:1000] + "..." if len(context) > 1000 else context,
+            "system_prompt_preview": Config.SYSTEM_PROMPT[:300] + "..."
+        }
+        
+        return jsonify(debug_info), 200
+        
+    except Exception as e:
+        logger.error(f"Error in debug contact: {e}", exc_info=True)
+        return ResponseFormatter.format_error_response(f"Debug contact error: {str(e)}", 500)
+
 @app.route("/reload-documents", methods=["POST"])
 def reload_documents():
     """Reload documents from configured URLs"""
@@ -558,6 +665,137 @@ def reload_documents():
     except Exception as e:
         logger.error(f"Error starting document reload: {e}")
         return ResponseFormatter.format_error_response("Failed to start document reload", 500)
+
+@app.route('/health', methods=['GET'])
+def health_check():
+    """Health check endpoint for all services"""
+    try:
+        health_status = {
+            'status': 'healthy',
+            'timestamp': datetime.now().isoformat(),
+            'services': {}
+        }
+        
+        # Check Redis
+        try:
+            redis_service.redis_client.ping()
+            health_status['services']['redis'] = 'healthy'
+        except Exception as e:
+            health_status['services']['redis'] = f'unhealthy: {str(e)}'
+            health_status['status'] = 'degraded'
+        
+        # Check Ollama
+        try:
+            ollama_available = ollama_service.is_available()
+            if ollama_available:
+                models = ollama_service.get_models()
+                health_status['services']['ollama'] = {
+                    'status': 'healthy',
+                    'models_count': len(models) if models else 0,
+                    'models': models[:3] if models else []  # Show first 3 models
+                }
+            else:
+                health_status['services']['ollama'] = 'unhealthy: service not available'
+                health_status['status'] = 'degraded'
+        except Exception as e:
+            health_status['services']['ollama'] = f'unhealthy: {str(e)}'
+            health_status['status'] = 'degraded'
+        
+        # Check embedding service
+        try:
+            # Test embedding generation
+            test_embedding = embedding_service.get_embedding("test")
+            if test_embedding and len(test_embedding) > 0:
+                health_status['services']['embeddings'] = 'healthy'
+            else:
+                health_status['services']['embeddings'] = 'unhealthy: no embedding generated'
+                health_status['status'] = 'degraded'
+        except Exception as e:
+            health_status['services']['embeddings'] = f'unhealthy: {str(e)}'
+            health_status['status'] = 'degraded'
+        
+        # Check RAG retriever
+        try:
+            if rag_retriever and len(rag_retriever.chunks) > 0:
+                health_status['services']['rag'] = {
+                    'status': 'healthy',
+                    'documents_loaded': len(rag_retriever.chunks)
+                }
+            else:
+                health_status['services']['rag'] = 'unhealthy: no documents loaded'
+                health_status['status'] = 'degraded'
+        except Exception as e:
+            health_status['services']['rag'] = f'unhealthy: {str(e)}'
+            health_status['status'] = 'degraded'
+        
+        return jsonify(health_status)
+        
+    except Exception as e:
+        logger.error(f"Health check error: {str(e)}")
+        return jsonify({
+            'status': 'unhealthy',
+            'error': str(e),
+            'timestamp': datetime.now().isoformat()
+        }), 500
+
+@app.route('/warmup', methods=['POST'])
+def warmup_model():
+    """Manually trigger model warmup"""
+    try:
+        logger.info("Manual warmup requested")
+        start_time = time.time()
+        
+        if not ollama_service.is_available():
+            return jsonify({
+                'status': 'error',
+                'message': 'Ollama service not available'
+            }), 503
+        
+        if ollama_service.is_warmed_up:
+            return jsonify({
+                'status': 'already_warmed',
+                'message': 'Model is already warmed up',
+                'timestamp': datetime.now().isoformat()
+            })
+        
+        # Force immediate warmup
+        ollama_service.ensure_warmup()
+        warmup_time = time.time() - start_time
+        
+        return jsonify({
+            'status': 'success',
+            'message': f'Model warmup completed in {warmup_time:.2f}s',
+            'warmup_time': warmup_time,
+            'timestamp': datetime.now().isoformat()
+        })
+        
+    except Exception as e:
+        logger.error(f"Warmup error: {str(e)}")
+        return jsonify({
+            'status': 'error',
+            'message': str(e),
+            'timestamp': datetime.now().isoformat()
+        }), 500
+
+@app.route('/status', methods=['GET'])
+def get_status():
+    """Get quick service status including warmup state"""
+    try:
+        return jsonify({
+            'ollama_available': ollama_service.is_available(),
+            'model_warmed_up': ollama_service.is_warmed_up,
+            'warmup_in_progress': ollama_service.warmup_in_progress,
+            'model_name': ollama_service.model_name,
+            'rag_ready': rag_retriever is not None and len(rag_retriever.chunks) > 0,
+            'documents_loaded': len(rag_retriever.chunks) if rag_retriever else 0,
+            'timestamp': datetime.now().isoformat()
+        })
+    except Exception as e:
+        logger.error(f"Status check error: {str(e)}")
+        return jsonify({
+            'error': str(e),
+            'timestamp': datetime.now().isoformat()
+        }), 500
 
 # Error handlers
 @app.errorhandler(400)
