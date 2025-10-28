@@ -19,6 +19,8 @@ class OllamaService:
         self.model_name = Config.OLLAMA_MODEL
         self.is_warmed_up = False
         self.warmup_in_progress = False
+        self._last_availability_check = 0
+        self._availability_cache_duration = 30  # Cache availability for 30 seconds
         self._connect()
         # Start warmup in background thread to not block initialization
         self._async_warmup()
@@ -110,18 +112,25 @@ class OllamaService:
             logger.error(f"Quick inline warmup failed: {e}")
     
     def is_available(self) -> bool:
-        """Check if Ollama service is available"""
+        """Check if Ollama service is available with caching to reduce calls"""
         if not self.client:
             return False
         
+        # Use cached result if recent
+        current_time = time.time()
+        if (current_time - self._last_availability_check) < self._availability_cache_duration:
+            return self.is_connected
+        
         try:
-            # Try to list models as a health check
+            # Try to list models as a health check - but cache the result
             models_response = self.client.list()
-            # Just check if we got a response, don't parse it here
-            return models_response is not None
+            self.is_connected = models_response is not None
+            self._last_availability_check = current_time
+            return self.is_connected
         except Exception as e:
             logger.warning(f"Ollama health check failed: {e}")
             self.is_connected = False
+            self._last_availability_check = current_time
             return False
     
     def chat(self, messages: List[Dict[str, str]], temperature: float = 0.7) -> Optional[str]:

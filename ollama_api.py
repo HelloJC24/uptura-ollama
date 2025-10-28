@@ -113,10 +113,27 @@ def load_documents():
 
 @app.route("/health", methods=["GET"])
 def health_check():
-    """Health check endpoint"""
+    """Lightweight health check endpoint - no external service calls"""
     logger.debug("Health check requested")
+    
+    # Simple response without calling external services
+    return jsonify({
+        "status": "healthy",
+        "timestamp": datetime.now().isoformat(),
+        "app": "running"
+    }), 200
+
+@app.route("/health/full", methods=["GET"])
+def full_health_check():
+    """Full health check endpoint with service verification"""
+    logger.debug("Full health check requested")
     health_data = create_health_check_response()
     return jsonify(health_data), 200
+
+@app.route("/ping", methods=["GET"])
+def ping():
+    """Ultra-lightweight ping endpoint for monitoring"""
+    return "pong", 200
 
 @app.route("/stats", methods=["GET"])
 def get_stats():

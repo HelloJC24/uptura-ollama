@@ -33,8 +33,8 @@ RUN useradd --create-home --shell /bin/bash app && \
     chown -R app:app /app
 USER app
 
-# Health check
-HEALTHCHECK --interval=30s --timeout=10s --start-period=60s --retries=3 \
+# Health check - lightweight and less frequent
+HEALTHCHECK --interval=60s --timeout=5s --start-period=60s --retries=2 \
     CMD curl -f http://localhost:5000/health || exit 1
 
 # Expose port

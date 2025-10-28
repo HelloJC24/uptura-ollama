@@ -358,24 +358,25 @@ def log_request_info(request_data: Dict[str, Any], user_ip: str = None):
     logger.info(f"Incoming request from {user_ip or 'unknown'}: {request_data}")
 
 def create_health_check_response() -> Dict[str, Any]:
-    """Create health check response"""
+    """Create lightweight health check response - avoid heavy operations"""
     from services.redis_service import redis_service
     from services.ollama_service import ollama_service
-    from services.embedding_service import embedding_service
+    
+    # Use cached status when possible to avoid repeated external calls
+    redis_available = False
+    try:
+        redis_service.redis_client.ping()
+        redis_available = True
+    except:
+        redis_available = False
     
     return {
         "status": "healthy",
         "timestamp": time.time(),
         "services": {
-            "redis": redis_service.is_available(),
-            "ollama": ollama_service.is_available(),
-            "embeddings": embedding_service.is_available()
-        },
-        "config": {
-            "streaming_enabled": Config.ENABLE_STREAMING,
-            "model": Config.OLLAMA_MODEL,
-            "top_k": Config.TOP_K,
-            "min_similarity": Config.MIN_SIMILARITY
+            "redis": redis_available,
+            "ollama": ollama_service.is_connected,  # Use cached connection status
+            "app": True  # Flask app is running if this responds
         }
     }
 

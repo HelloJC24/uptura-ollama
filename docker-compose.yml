@@ -24,9 +24,9 @@ services:
     restart: unless-stopped
     healthcheck:
       test: ["CMD", "curl", "-f", "http://localhost:5000/health"]
-      interval: 30s
-      timeout: 10s
-      retries: 3
+      interval: 60s
+      timeout: 5s
+      retries: 2
 
   # NGINX Reverse Proxy with Streaming Support
   nginx:
@@ -45,9 +45,9 @@ services:
     restart: unless-stopped
     healthcheck:
       test: ["CMD", "curl", "-f", "http://localhost/health"]
-      interval: 30s
-      timeout: 10s
-      retries: 3
+      interval: 60s
+      timeout: 5s
+      retries: 2
 
   # Redis (if you want to run it locally instead of external)
   # redis:
