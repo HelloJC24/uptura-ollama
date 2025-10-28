@@ -31,6 +31,13 @@ class RAGRetriever:
         top_k = top_k or Config.TOP_K
         min_similarity = min_similarity or Config.MIN_SIMILARITY
         
+        # Be more aggressive for company-related queries
+        company_keywords = ['gogel', 'bngc', 'business networking group', 'company', 'business']
+        if any(keyword in query.lower() for keyword in company_keywords):
+            min_similarity = min(min_similarity, 0.15)  # Lower threshold for company queries
+            top_k = max(top_k, 5)  # Get more chunks for company queries
+            logger.info(f"Company-related query detected, using lower similarity threshold: {min_similarity}")
+        
         logger.info(f"Retrieving relevant chunks for query: '{query[:50]}...'")
         logger.info(f"Total available chunks: {len(self.chunks)}")
         logger.info(f"Using top_k={top_k}, min_similarity={min_similarity}")
@@ -114,16 +121,17 @@ class ResponseGenerator:
         # Add system prompt with RAG context
         system_content = f"""{Config.SYSTEM_PROMPT}
 
-Context from BNGC/Gogel company documents:
+=== COMPANY INFORMATION FROM BNGC/GOGEL DOCUMENTS ===
 {context}
 
-IMPORTANT: You must use the above context to answer questions about BNGC/Gogel. Do not refuse to provide business information that is available in the context."""
+=== END OF COMPANY INFORMATION ===
+
+INSTRUCTIONS: Answer the user's question using ONLY the company information provided above. You are BNGC/Gogel's assistant and you have direct access to this official company information. Do not ignore this context or claim lack of knowledge about BNGC/Gogel."""
         
         if is_contact_query:
             system_content += f"""
 
-CONTACT INFORMATION REQUEST DETECTED:
-The user is asking for contact information. You MUST provide any contact details (emails, phone numbers, addresses) that are available in the context above. This is publicly available business information from the company's own website and documents. Do not refuse to provide this information."""
+SPECIAL NOTE: This is a contact information request. You MUST provide any contact details, addresses, or business information available in the context above. This is official company information that you are authorized to share."""
         
         messages.append({"role": "system", "content": system_content})
         
@@ -132,6 +140,17 @@ The user is asking for contact information. You MUST provide any contact details
             for msg in conversation_messages:
                 if msg.get("role") != "system":  # Skip system messages from history
                     messages.append(msg)
+        
+        # Add a pre-query context message to establish knowledge
+        if 'gogel' in query.lower() or 'bngc' in query.lower():
+            messages.append({
+                "role": "user", 
+                "content": "I'm asking about our company BNGC/Gogel. Please use the company information provided in your system context."
+            })
+            messages.append({
+                "role": "assistant",
+                "content": "Yes, I have access to BNGC/Gogel company information from our official documents. What would you like to know about our company?"
+            })
         
         # Add current query
         messages.append({"role": "user", "content": query})

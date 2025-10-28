@@ -900,6 +900,60 @@ def test_ollama_direct():
     
     except Exception as e:
         logger.error(f"Ollama test error: {e}")
+@app.route('/test/gogel', methods=['POST'])
+def test_gogel_query():
+    """Test specifically the Gogel query to see what context is retrieved"""
+    try:
+        query = "Do you know Gogel?"
+        
+        if not rag_retriever:
+            return jsonify({'error': 'RAG retriever not initialized'}), 503
+        
+        # Get similar documents with debug info
+        relevant_chunks = rag_retriever.retrieve_relevant_chunks(query)
+        context = rag_retriever.create_context(relevant_chunks)
+        
+        # Get embedding similarities
+        query_embedding = embedding_service.get_embedding(query)
+        similarities = []
+        for i, chunk in enumerate(rag_retriever.chunks):
+            if chunk.embedding:
+                similarity = embedding_service.calculate_similarity(query_embedding, chunk.embedding)
+                similarities.append({
+                    'index': i,
+                    'similarity': round(similarity, 4),
+                    'url': chunk.source_url,
+                    'text_preview': chunk.text[:200] + '...' if len(chunk.text) > 200 else chunk.text
+                })
+        
+        similarities.sort(key=lambda x: x['similarity'], reverse=True)
+        
+        # Test the actual system prompt that would be used
+        system_content = f"""{Config.SYSTEM_PROMPT}
+
+=== COMPANY INFORMATION FROM BNGC/GOGEL DOCUMENTS ===
+{context}
+
+=== END OF COMPANY INFORMATION ===
+
+INSTRUCTIONS: Answer the user's question using ONLY the company information provided above. You are BNGC/Gogel's assistant and you have direct access to this official company information. Do not ignore this context or claim lack of knowledge about BNGC/Gogel."""
+        
+        return jsonify({
+            'query': query,
+            'config': {
+                'top_k': Config.TOP_K,
+                'min_similarity': Config.MIN_SIMILARITY
+            },
+            'relevant_chunks_found': len(relevant_chunks),
+            'context_length': len(context),
+            'context_preview': context[:500] + '...' if len(context) > 500 else context,
+            'top_5_similarities': similarities[:5],
+            'chunks_above_threshold': len([s for s in similarities if s['similarity'] >= Config.MIN_SIMILARITY]),
+            'system_prompt_preview': system_content[:500] + '...'
+        })
+        
+    except Exception as e:
+        logger.error(f"Gogel test error: {e}")
         return jsonify({'error': str(e)}), 500
     return ResponseFormatter.format_error_response("Internal server error", 500)
 
