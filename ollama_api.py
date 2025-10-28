@@ -11,6 +11,7 @@ import json
 from datetime import datetime
 from typing import Dict, Any, Optional
 from flask import Flask, request, jsonify, Response
+from flask_cors import CORS
 
 # Import our improved modules
 from config import Config
@@ -39,6 +40,15 @@ Config.log_config()
 
 # Initialize Flask app
 app = Flask(Config.APP_NAME)
+
+# Configure CORS for frontend access
+CORS(app, 
+     origins=["*"],  # Allow all origins for development
+     methods=["GET", "POST", "OPTIONS", "DELETE", "PUT"],
+     allow_headers=["Content-Type", "Authorization", "X-Requested-With", "Cache-Control"],
+     supports_credentials=False,
+     max_age=86400  # 24 hours
+)
 
 # Add request timing middleware
 @app.before_request
@@ -781,13 +791,28 @@ def warmup_model():
 def get_status():
     """Get quick service status including warmup state"""
     try:
+        # Test Ollama connectivity
+        ollama_test = None
+        try:
+            if ollama_service.is_available():
+                test_messages = [{"role": "user", "content": "Hi"}]
+                ollama_test = ollama_service.chat(test_messages)
+        except Exception as e:
+            ollama_test = f"Error: {str(e)}"
+        
         return jsonify({
             'ollama_available': ollama_service.is_available(),
             'model_warmed_up': ollama_service.is_warmed_up,
             'warmup_in_progress': ollama_service.warmup_in_progress,
             'model_name': ollama_service.model_name,
+            'ollama_test_response': ollama_test,
             'rag_ready': rag_retriever is not None and len(rag_retriever.chunks) > 0,
             'documents_loaded': len(rag_retriever.chunks) if rag_retriever else 0,
+            'config_values': {
+                'top_k': Config.TOP_K,
+                'min_similarity': Config.MIN_SIMILARITY,
+                'enable_streaming': Config.ENABLE_STREAMING
+            },
             'timestamp': datetime.now().isoformat()
         })
     except Exception as e:
@@ -808,7 +833,57 @@ def not_found(error):
 
 @app.errorhandler(500)
 def internal_error(error):
-    logger.error(f"Internal server error: {error}")
+    return ResponseFormatter.format_error_response("Internal server error", 500)
+
+# Test endpoints for debugging
+@app.route('/test/stream', methods=['GET'])
+def test_streaming():
+    """Test streaming functionality with simple data"""
+    def simple_generator():
+        import time
+        yield "Test chunk 1"
+        time.sleep(1)
+        yield "Test chunk 2"
+        time.sleep(1)
+        yield "Test chunk 3"
+    
+    return ResponseFormatter.format_streaming_response(simple_generator())
+
+@app.route('/test/ollama', methods=['POST'])
+def test_ollama_direct():
+    """Test Ollama service directly"""
+    try:
+        data = request.get_json() or {}
+        query = data.get('query', 'Hello')
+        
+        if not ollama_service.is_available():
+            return jsonify({'error': 'Ollama not available'}), 503
+        
+        messages = [{"role": "user", "content": query}]
+        
+        # Test both direct and streaming
+        direct_response = ollama_service.chat(messages)
+        
+        def test_stream():
+            chunk_count = 0
+            for chunk in ollama_service.stream_chat(messages):
+                chunk_count += 1
+                yield f"Chunk {chunk_count}: {chunk}"
+                if chunk_count >= 5:  # Limit for testing
+                    break
+        
+        if data.get('streaming', False):
+            return ResponseFormatter.format_streaming_response(test_stream())
+        else:
+            return jsonify({
+                'direct_response': direct_response,
+                'ollama_available': ollama_service.is_available(),
+                'model_warmed_up': ollama_service.is_warmed_up
+            })
+    
+    except Exception as e:
+        logger.error(f"Ollama test error: {e}")
+        return jsonify({'error': str(e)}), 500
     return ResponseFormatter.format_error_response("Internal server error", 500)
 
 # Startup initialization

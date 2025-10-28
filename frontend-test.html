@@ -1,0 +1,419 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>BNGC RAG API Frontend Test</title>
+    <style>
+        body {
+            font-family: Arial, sans-serif;
+            max-width: 1200px;
+            margin: 0 auto;
+            padding: 20px;
+            background-color: #f5f5f5;
+        }
+        .container {
+            background: white;
+            padding: 20px;
+            border-radius: 8px;
+            box-shadow: 0 2px 4px rgba(0,0,0,0.1);
+            margin-bottom: 20px;
+        }
+        .input-group {
+            margin-bottom: 15px;
+        }
+        label {
+            display: block;
+            margin-bottom: 5px;
+            font-weight: bold;
+        }
+        input[type="text"], textarea, select {
+            width: 100%;
+            padding: 10px;
+            border: 1px solid #ddd;
+            border-radius: 4px;
+            box-sizing: border-box;
+        }
+        textarea {
+            min-height: 100px;
+            resize: vertical;
+        }
+        button {
+            background-color: #007bff;
+            color: white;
+            padding: 10px 20px;
+            border: none;
+            border-radius: 4px;
+            cursor: pointer;
+            margin-right: 10px;
+        }
+        button:hover {
+            background-color: #0056b3;
+        }
+        button:disabled {
+            background-color: #6c757d;
+            cursor: not-allowed;
+        }
+        .response {
+            background-color: #f8f9fa;
+            border: 1px solid #dee2e6;
+            border-radius: 4px;
+            padding: 15px;
+            margin-top: 15px;
+            white-space: pre-wrap;
+            font-family: monospace;
+            max-height: 400px;
+            overflow-y: auto;
+        }
+        .status {
+            padding: 10px;
+            border-radius: 4px;
+            margin: 10px 0;
+        }
+        .status.success {
+            background-color: #d4edda;
+            border: 1px solid #c3e6cb;
+            color: #155724;
+        }
+        .status.error {
+            background-color: #f8d7da;
+            border: 1px solid #f5c6cb;
+            color: #721c24;
+        }
+        .status.info {
+            background-color: #d1ecf1;
+            border: 1px solid #bee5eb;
+            color: #0c5460;
+        }
+        .streaming-indicator {
+            display: none;
+            background-color: #fff3cd;
+            border: 1px solid #ffeaa7;
+            color: #856404;
+            padding: 10px;
+            border-radius: 4px;
+            margin: 10px 0;
+        }
+    </style>
+</head>
+<body>
+    <h1>🏢 BNGC RAG API Frontend Test</h1>
+    
+    <!-- API Configuration -->
+    <div class="container">
+        <h2>API Configuration</h2>
+        <div class="input-group">
+            <label for="apiUrl">API Base URL:</label>
+            <input type="text" id="apiUrl" value="http://localhost" placeholder="http://your-domain.com">
+        </div>
+        <button onclick="testConnection()">Test Connection</button>
+        <button onclick="getStatus()">Get Status</button>
+        <div id="connectionStatus"></div>
+    </div>
+
+    <!-- Question Interface -->
+    <div class="container">
+        <h2>Ask Questions</h2>
+        <div class="input-group">
+            <label for="userQuery">Your Question:</label>
+            <textarea id="userQuery" placeholder="What is the contact information of BNGC?">What is the contact information of BNGC?</textarea>
+        </div>
+        <div class="input-group">
+            <label for="userId">User ID (optional):</label>
+            <input type="text" id="userId" value="user@example.com" placeholder="user@example.com">
+        </div>
+        <div class="input-group">
+            <label for="responseType">Response Type:</label>
+            <select id="responseType">
+                <option value="streaming">Streaming (SSE)</option>
+                <option value="direct">Direct Response</option>
+            </select>
+        </div>
+        <button onclick="askQuestion()">Ask Question</button>
+        <button onclick="clearResponse()">Clear Response</button>
+        
+        <div class="streaming-indicator" id="streamingIndicator">
+            🔄 Streaming response... Please wait.
+        </div>
+        
+        <div class="response" id="responseArea"></div>
+    </div>
+
+    <!-- Conversation History -->
+    <div class="container">
+        <h2>Conversation Management</h2>
+        <button onclick="getConversationHistory()">Get History</button>
+        <button onclick="clearConversation()">Clear Conversation</button>
+        <div class="response" id="conversationArea"></div>
+    </div>
+
+    <!-- Debug Tools -->
+    <div class="container">
+        <h2>Debug Tools</h2>
+        <button onclick="debugQuery()">Debug Query Processing</button>
+        <button onclick="debugContact()">Debug Contact Query</button>
+        <button onclick="testStreaming()">Test Basic Streaming</button>
+        <div class="response" id="debugArea"></div>
+    </div>
+
+    <script>
+        let eventSource = null;
+        
+        function getApiUrl() {
+            return document.getElementById('apiUrl').value.trim();
+        }
+        
+        function showStatus(message, type = 'info') {
+            const statusDiv = document.createElement('div');
+            statusDiv.className = `status ${type}`;
+            statusDiv.textContent = message;
+            document.getElementById('connectionStatus').appendChild(statusDiv);
+            
+            // Remove after 5 seconds
+            setTimeout(() => statusDiv.remove(), 5000);
+        }
+        
+        async function testConnection() {
+            const apiUrl = getApiUrl();
+            try {
+                const response = await fetch(`${apiUrl}/health`);
+                const data = await response.json();
+                showStatus(`Connection successful! Status: ${data.status || 'unknown'}`, 'success');
+            } catch (error) {
+                showStatus(`Connection failed: ${error.message}`, 'error');
+            }
+        }
+        
+        async function getStatus() {
+            const apiUrl = getApiUrl();
+            try {
+                const response = await fetch(`${apiUrl}/status`);
+                const data = await response.json();
+                document.getElementById('connectionStatus').innerHTML = `
+                    <div class="status success">
+                        <strong>System Status:</strong><br>
+                        Ollama Available: ${data.ollama_available}<br>
+                        Model Warmed Up: ${data.model_warmed_up}<br>
+                        RAG Ready: ${data.rag_ready}<br>
+                        Documents Loaded: ${data.documents_loaded}
+                    </div>
+                `;
+            } catch (error) {
+                showStatus(`Status check failed: ${error.message}`, 'error');
+            }
+        }
+        
+        async function askQuestion() {
+            const apiUrl = getApiUrl();
+            const query = document.getElementById('userQuery').value.trim();
+            const userId = document.getElementById('userId').value.trim() || 'anonymous';
+            const responseType = document.getElementById('responseType').value;
+            
+            if (!query) {
+                showStatus('Please enter a question', 'error');
+                return;
+            }
+            
+            const responseArea = document.getElementById('responseArea');
+            const streamingIndicator = document.getElementById('streamingIndicator');
+            
+            responseArea.textContent = '';
+            
+            if (responseType === 'streaming') {
+                // Close existing connection
+                if (eventSource) {
+                    eventSource.close();
+                }
+                
+                streamingIndicator.style.display = 'block';
+                
+                try {
+                    const response = await fetch(`${apiUrl}/ask`, {
+                        method: 'POST',
+                        headers: {
+                            'Content-Type': 'application/json',
+                        },
+                        body: JSON.stringify({
+                            query: query,
+                            user_id: userId,
+                            streaming: true
+                        })
+                    });
+                    
+                    if (!response.ok) {
+                        throw new Error(`HTTP ${response.status}: ${response.statusText}`);
+                    }
+                    
+                    const reader = response.body.getReader();
+                    const decoder = new TextDecoder();
+                    
+                    while (true) {
+                        const { done, value } = await reader.read();
+                        if (done) break;
+                        
+                        const chunk = decoder.decode(value);
+                        const lines = chunk.split('\n');
+                        
+                        for (const line of lines) {
+                            if (line.startsWith('data: ')) {
+                                try {
+                                    const data = JSON.parse(line.slice(6));
+                                    if (data.answer) {
+                                        responseArea.textContent += data.answer;
+                                    } else if (data.status === 'complete') {
+                                        streamingIndicator.style.display = 'none';
+                                        showStatus('Response completed', 'success');
+                                    } else if (data.error) {
+                                        showStatus(`Error: ${data.error}`, 'error');
+                                    }
+                                } catch (e) {
+                                    // Ignore JSON parse errors for partial chunks
+                                }
+                            }
+                        }
+                    }
+                } catch (error) {
+                    streamingIndicator.style.display = 'none';
+                    showStatus(`Streaming error: ${error.message}`, 'error');
+                }
+            } else {
+                // Direct response
+                try {
+                    const response = await fetch(`${apiUrl}/ask`, {
+                        method: 'POST',
+                        headers: {
+                            'Content-Type': 'application/json',
+                        },
+                        body: JSON.stringify({
+                            query: query,
+                            user_id: userId,
+                            streaming: false
+                        })
+                    });
+                    
+                    const data = await response.json();
+                    responseArea.textContent = JSON.stringify(data, null, 2);
+                } catch (error) {
+                    showStatus(`Request error: ${error.message}`, 'error');
+                }
+            }
+        }
+        
+        function clearResponse() {
+            document.getElementById('responseArea').textContent = '';
+            document.getElementById('streamingIndicator').style.display = 'none';
+            if (eventSource) {
+                eventSource.close();
+            }
+        }
+        
+        async function getConversationHistory() {
+            const apiUrl = getApiUrl();
+            const userId = document.getElementById('userId').value.trim() || 'anonymous';
+            
+            try {
+                const response = await fetch(`${apiUrl}/conversations/${userId}/history`);
+                const data = await response.json();
+                document.getElementById('conversationArea').textContent = JSON.stringify(data, null, 2);
+            } catch (error) {
+                showStatus(`Failed to get conversation history: ${error.message}`, 'error');
+            }
+        }
+        
+        async function clearConversation() {
+            const apiUrl = getApiUrl();
+            const userId = document.getElementById('userId').value.trim() || 'anonymous';
+            
+            try {
+                const response = await fetch(`${apiUrl}/conversations/${userId}/clear`, {
+                    method: 'POST'
+                });
+                const data = await response.json();
+                showStatus('Conversation cleared', 'success');
+                document.getElementById('conversationArea').textContent = JSON.stringify(data, null, 2);
+            } catch (error) {
+                showStatus(`Failed to clear conversation: ${error.message}`, 'error');
+            }
+        }
+        
+        async function debugQuery() {
+            const apiUrl = getApiUrl();
+            const query = document.getElementById('userQuery').value.trim() || 'contact information';
+            
+            try {
+                const response = await fetch(`${apiUrl}/debug/query`, {
+                    method: 'POST',
+                    headers: {
+                        'Content-Type': 'application/json',
+                    },
+                    body: JSON.stringify({ query })
+                });
+                const data = await response.json();
+                document.getElementById('debugArea').textContent = JSON.stringify(data, null, 2);
+            } catch (error) {
+                showStatus(`Debug query failed: ${error.message}`, 'error');
+            }
+        }
+        
+        async function debugContact() {
+            const apiUrl = getApiUrl();
+            
+            try {
+                const response = await fetch(`${apiUrl}/debug/contact`, {
+                    method: 'POST',
+                    headers: {
+                        'Content-Type': 'application/json',
+                    },
+                    body: JSON.stringify({ query: 'contact information BNGC' })
+                });
+                const data = await response.json();
+                document.getElementById('debugArea').textContent = JSON.stringify(data, null, 2);
+            } catch (error) {
+                showStatus(`Debug contact failed: ${error.message}`, 'error');
+            }
+        }
+        
+        async function testStreaming() {
+            const apiUrl = getApiUrl();
+            
+            try {
+                const response = await fetch(`${apiUrl}/test/stream`);
+                const reader = response.body.getReader();
+                const decoder = new TextDecoder();
+                
+                document.getElementById('debugArea').textContent = 'Testing streaming...\n';
+                
+                while (true) {
+                    const { done, value } = await reader.read();
+                    if (done) break;
+                    
+                    const chunk = decoder.decode(value);
+                    const lines = chunk.split('\n');
+                    
+                    for (const line of lines) {
+                        if (line.startsWith('data: ')) {
+                            try {
+                                const data = JSON.parse(line.slice(6));
+                                if (data.answer) {
+                                    document.getElementById('debugArea').textContent += data.answer + '\n';
+                                }
+                            } catch (e) {
+                                // Ignore parse errors
+                            }
+                        }
+                    }
+                }
+                
+                showStatus('Streaming test completed', 'success');
+            } catch (error) {
+                showStatus(`Streaming test failed: ${error.message}`, 'error');
+            }
+        }
+        
+        // Initialize
+        document.addEventListener('DOMContentLoaded', function() {
+            testConnection();
+        });
+    </script>
+</body>
+</html>

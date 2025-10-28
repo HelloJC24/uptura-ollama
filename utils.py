@@ -152,8 +152,17 @@ The user is asking for contact information. You MUST provide any contact details
     @staticmethod
     def _generate_streaming_answer(messages: List[Dict[str, str]]) -> Generator[str, None, None]:
         """Generate streaming answer"""
-        for chunk in ollama_service.stream_chat(messages):
-            yield chunk
+        logger.info(f"Starting streaming answer generation with {len(messages)} messages")
+        try:
+            chunk_count = 0
+            for chunk in ollama_service.stream_chat(messages):
+                chunk_count += 1
+                logger.debug(f"Yielding chunk {chunk_count}: {chunk[:50]}...")
+                yield chunk
+            logger.info(f"Streaming completed with {chunk_count} chunks")
+        except Exception as e:
+            logger.error(f"Error in streaming answer generation: {e}")
+            yield f"Error: {str(e)}"
 
 class ResponseFormatter:
     """Formats API responses"""
@@ -164,20 +173,29 @@ class ResponseFormatter:
         def generate():
             try:
                 # Send initial connection confirmation
-                yield "data: " + json.dumps({"status": "connected"}) + "\n\n"
+                initial_data = "data: " + json.dumps({"status": "connected"}) + "\n\n"
+                logger.debug("Sending initial SSE connection confirmation")
+                yield initial_data
                 
+                chunk_count = 0
                 for content in content_generator:
                     if content:  # Only send non-empty content
+                        chunk_count += 1
                         response_chunk = {"answer": content}
-                        yield "data: " + json.dumps(response_chunk) + "\n\n"
+                        sse_data = "data: " + json.dumps(response_chunk) + "\n\n"
+                        logger.debug(f"Sending SSE chunk {chunk_count}: {content[:30]}...")
+                        yield sse_data
                 
                 # Send completion signal
-                yield "data: " + json.dumps({"status": "complete"}) + "\n\n"
+                completion_data = "data: " + json.dumps({"status": "complete"}) + "\n\n"
+                logger.info(f"Sending SSE completion signal after {chunk_count} chunks")
+                yield completion_data
                 
             except Exception as e:
                 logger.error(f"Error in streaming response: {e}")
                 error_response = {"error": f"Streaming error: {str(e)}"}
-                yield "data: " + json.dumps(error_response) + "\n\n"
+                error_data = "data: " + json.dumps(error_response) + "\n\n"
+                yield error_data
         
         return Response(
             generate(),
