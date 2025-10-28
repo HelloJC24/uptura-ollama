@@ -666,9 +666,9 @@ def reload_documents():
         logger.error(f"Error starting document reload: {e}")
         return ResponseFormatter.format_error_response("Failed to start document reload", 500)
 
-@app.route('/health', methods=['GET'])
-def health_check():
-    """Health check endpoint for all services"""
+@app.route('/health/detailed', methods=['GET'])
+def detailed_health_check():
+    """Detailed health check endpoint for all services"""
     try:
         health_status = {
             'status': 'healthy',
