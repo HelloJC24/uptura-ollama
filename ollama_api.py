@@ -954,7 +954,198 @@ INSTRUCTIONS: Answer the user's question using ONLY the company information prov
         
     except Exception as e:
         logger.error(f"Gogel test error: {e}")
-        return jsonify({'error': str(e)}), 500
+@app.route('/ask/rag-only', methods=['POST'])
+def ask_rag_only():
+    """RAG-only endpoint without LLM processing"""
+    start_time = time.time()
+    user_ip = request.remote_addr
+    
+    logger.info(f"=== RAG-ONLY REQUEST RECEIVED at {time.strftime('%H:%M:%S.%f')[:-3]} from {user_ip} ===")
+    
+    try:
+        data = request.get_json()
+        if not data:
+            return ResponseFormatter.format_error_response("Invalid JSON in request body")
+        
+        query = data.get("query", "").strip()
+        if not query:
+            return ResponseFormatter.format_error_response("Query is required")
+        
+        logger.info(f"Processing RAG-only query: '{query[:100]}...'")
+        
+        # Get relevant documents
+        if not rag_retriever:
+            return ResponseFormatter.format_error_response("RAG retriever not initialized", 503)
+        
+        relevant_chunks = rag_retriever.retrieve_relevant_chunks(query)
+        
+        if not relevant_chunks:
+            return jsonify({
+                "answer": "I don't have enough information in our documents to answer that specific question.",
+                "query": query,
+                "method": "rag-only",
+                "sources": []
+            })
+        
+        # Create smart RAG-only response
+        response = create_rag_only_response(query, relevant_chunks)
+        
+        performance_monitor.record_request(time.time() - start_time, cache_hit=False)
+        
+        return jsonify(response)
+        
+    except Exception as e:
+        logger.error(f"Error in RAG-only endpoint: {e}")
+        return ResponseFormatter.format_error_response(f"RAG-only error: {str(e)}", 500)
+
+def create_rag_only_response(query: str, chunks) -> Dict[str, Any]:
+    """Create intelligent response using only RAG without LLM"""
+    
+    # Analyze query type
+    query_lower = query.lower()
+    is_about_gogel = 'gogel' in query_lower
+    is_about_bngc = 'bngc' in query_lower
+    is_contact_query = any(word in query_lower for word in ['contact', 'phone', 'email', 'address', 'reach'])
+    is_about_services = any(word in query_lower for word in ['service', 'what do', 'offer', 'provide'])
+    
+    # Build response based on query type and content
+    if is_about_gogel or is_about_bngc:
+        if 'know' in query_lower or 'what is' in query_lower:
+            answer = "Yes! Gogel is our real estate and development division of BNGC (Business Networking Group Corporation). "
+        else:
+            answer = "About Gogel/BNGC: "
+    elif is_contact_query:
+        answer = "Contact Information: "
+    elif is_about_services:
+        answer = "Our Services: "
+    else:
+        answer = "Based on our company information: "
+    
+    # Extract and format relevant information
+    unique_info = set()
+    sources = []
+    
+    for chunk in chunks:
+        # Clean and extract key information
+        text = chunk.text.strip()
+        if text and text not in unique_info:
+            # Extract key phrases and clean text
+            if len(text) > 200:
+                # Summarize long text
+                sentences = text.split('.')
+                key_sentences = [s.strip() for s in sentences[:3] if s.strip()]
+                text = '. '.join(key_sentences) + '.'
+            
+            unique_info.add(text)
+            sources.append({
+                "url": chunk.source_url,
+                "text": text[:300] + "..." if len(text) > 300 else text
+            })
+    
+    # Combine information intelligently
+    if is_about_gogel and unique_info:
+        gogel_info = [info for info in unique_info if 'gogel' in info.lower()]
+        if gogel_info:
+            answer += "Gogel is our real estate and development company. " + " ".join(gogel_info[:2])
+        else:
+            answer += " ".join(list(unique_info)[:2])
+    else:
+        answer += " ".join(list(unique_info)[:3])
+    
+    return {
+        "answer": answer,
+        "query": query,
+        "method": "rag-only",
+        "chunks_found": len(chunks),
+        "sources": sources[:5],  # Limit sources
+        "confidence": "high" if len(chunks) >= 3 else "medium"
+    }
+
+@app.route('/ask/openai', methods=['POST'])
+def ask_with_openai():
+    """Alternative endpoint using OpenAI API instead of Ollama"""
+    try:
+        data = request.get_json()
+        query = data.get("query", "").strip()
+        
+        if not query:
+            return ResponseFormatter.format_error_response("Query is required")
+        
+        # Get RAG context
+        relevant_chunks = rag_retriever.retrieve_relevant_chunks(query)
+        if not relevant_chunks:
+            return jsonify({"answer": "No relevant information found.", "method": "openai-rag"})
+        
+        context = rag_retriever.create_context(relevant_chunks)
+        
+        # Simple template-based prompt for OpenAI
+        prompt = f"""You are a helpful assistant for BNGC/Gogel company.
+
+Company Information:
+{context}
+
+Question: {query}
+
+Instructions: Answer the question using ONLY the company information provided above. Be specific and helpful."""
+        
+        # Note: This requires OpenAI API key
+        # You could implement this with requests to OpenAI API
+        # or use other LLM services like Anthropic Claude, etc.
+        
+        return jsonify({
+            "message": "OpenAI endpoint template ready",
+            "context_preview": context[:200] + "...",
+            "note": "Add OpenAI API implementation here",
+            "method": "openai-template"
+        })
+        
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+
+@app.route('/ask/hybrid', methods=['POST'])
+def ask_hybrid():
+    """Hybrid approach: RAG + Simple template + minimal LLM"""
+    try:
+        data = request.get_json()
+        query = data.get("query", "").strip()
+        
+        if not query:
+            return ResponseFormatter.format_error_response("Query is required")
+        
+        # Get RAG context
+        relevant_chunks = rag_retriever.retrieve_relevant_chunks(query)
+        
+        # First try pure RAG
+        if relevant_chunks:
+            rag_response = create_rag_only_response(query, relevant_chunks)
+            
+            # If RAG gives a good response, use it
+            if len(rag_response["answer"]) > 50:  # Decent length response
+                rag_response["method"] = "hybrid-rag-primary"
+                return jsonify(rag_response)
+        
+        # Fallback to very simple LLM with minimal context
+        context = rag_retriever.create_context(relevant_chunks) if relevant_chunks else ""
+        
+        # Ultra-simple prompt
+        simple_prompt = f"""Context: {context}
+Question: {query}
+Answer briefly using the context:"""
+        
+        # Try with minimal Ollama call
+        messages = [{"role": "user", "content": simple_prompt}]
+        answer = ollama_service.chat(messages, temperature=0.1)  # Very low temperature
+        
+        return jsonify({
+            "answer": answer or "Unable to generate response",
+            "method": "hybrid-simple-llm",
+            "context_used": len(context) > 0,
+            "chunks_found": len(relevant_chunks)
+        })
+        
+    except Exception as e:
+        logger.error(f"Hybrid endpoint error: {e}")
+        return jsonify({"error": str(e)}), 500
     return ResponseFormatter.format_error_response("Internal server error", 500)
 
 # Startup initialization

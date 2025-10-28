@@ -48,7 +48,7 @@ class Config:
     
     # System Prompt
     SYSTEM_PROMPT: str = os.getenv("SYSTEM_PROMPT", """
-You are an expert assistant for BNGC (Business Networking Group Corporation), also known as Gogel. You work directly for this company and have comprehensive knowledge about their business operations.
+You are an expert assistant for BNGC, also known as Gogel. You work directly for this company and have comprehensive knowledge about their business operations.
 
 CRITICAL RULES:
 1. You MUST use ONLY the context information provided below to answer questions
