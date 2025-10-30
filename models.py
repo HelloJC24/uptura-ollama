@@ -242,14 +242,81 @@ class DocumentProcessor:
         logger.info(f"Created {len(chunks)} chunks from {url}")
         return chunks
     
-    def process_document(self, url: str) -> List[DocumentChunk]:
-        """Process a single document: fetch, extract, chunk, and embed"""
-        logger.info(f"Processing document: {url}")
+    async def process_document(self, url: str) -> List[DocumentChunk]:
+        """Process a single document: fetch with enhanced processing, extract, chunk, and embed"""
+        logger.info(f"Processing document with enhanced fetching: {url}")
         
         if url in self.processed_urls:
             logger.info(f"Document {url} already processed, skipping")
             return []
         
+        try:
+            # Use enhanced document processor
+            from enhanced_document_processor import enhanced_document_processor
+            
+            # Fetch enhanced content
+            result = await enhanced_document_processor.fetch_document_content(url)
+            
+            if result.get('error'):
+                logger.error(f"Error fetching enhanced content from {url}: {result['error']}")
+                return []
+            
+            # Get combined content from all sources
+            text = enhanced_document_processor.get_all_content(result)
+            
+            if not text or not text.strip():
+                logger.warning(f"No text extracted from {url} with enhanced processing")
+                # Fallback to static method
+                html_content = self.fetch_document(url)
+                if html_content:
+                    text = self.extract_text(html_content)
+                else:
+                    return []
+            
+            logger.info(f"Enhanced processing extracted {len(text)} characters from {url}")
+            logger.info(f"Method used: {result.get('method', 'fallback')}")
+            if result.get('api_data'):
+                logger.info(f"Found {len(result['api_data'])} API endpoints with data")
+            
+            # Create chunks
+            chunk_texts = self.create_chunks(text, url)
+            if not chunk_texts:
+                logger.warning(f"No chunks created from {url}")
+                return []
+            
+            # Generate embeddings
+            embeddings = embedding_service.get_embeddings_batch(chunk_texts)
+            
+            # Create DocumentChunk objects
+            document_chunks = []
+            for i, (chunk_text, embedding) in enumerate(zip(chunk_texts, embeddings)):
+                if embedding:  # Only add chunks with valid embeddings
+                    chunk = DocumentChunk(
+                        text=chunk_text,
+                        embedding=embedding,
+                        source_url=url,
+                        chunk_index=i
+                    )
+                    document_chunks.append(chunk)
+            
+            # Store in Redis with enhanced metadata
+            self._store_chunks_in_redis(document_chunks, metadata=result)
+            
+            # Mark as processed
+            self.processed_urls.add(url)
+            self.chunks.extend(document_chunks)
+            
+        except Exception as e:
+            logger.error(f"Error in enhanced document processing for {url}: {e}")
+            # Fallback to standard processing
+            logger.info(f"Falling back to standard processing for {url}")
+            return await self._process_document_fallback(url)
+        
+        logger.info(f"Successfully processed {url} with {len(document_chunks)} chunks using enhanced method")
+        return document_chunks
+    
+    async def _process_document_fallback(self, url: str) -> List[DocumentChunk]:
+        """Fallback to standard document processing"""
         # Fetch document
         html_content = self.fetch_document(url)
         if not html_content:
@@ -292,18 +359,42 @@ class DocumentProcessor:
         logger.info(f"Successfully processed {len(document_chunks)} chunks from {url}")
         return document_chunks
     
-    def _store_chunks_in_redis(self, chunks: List[DocumentChunk]) -> None:
-        """Store document chunks in Redis"""
+    def _store_chunks_in_redis(self, chunks: List[DocumentChunk], metadata: Dict[str, Any] = None) -> None:
+        """Store document chunks in Redis with optional enhanced metadata"""
         if not redis_service.is_available():
             logger.warning("Redis not available, skipping chunk storage")
             return
         
         for chunk in chunks:
             key = f"doc_chunk:{chunk.source_url}:{chunk.chunk_index}"
-            success = redis_service.set(key, chunk.to_dict(), ttl=Config.CACHE_TTL)
+            chunk_data = chunk.to_dict()
+            
+            # Add enhanced metadata if available
+            if metadata:
+                chunk_data['enhanced_metadata'] = {
+                    'fetch_method': metadata.get('method', 'static'),
+                    'has_dynamic_content': bool(metadata.get('dynamic_content')),
+                    'api_endpoints_found': len(metadata.get('api_data', [])),
+                    'fetch_timestamp': time.time()
+                }
+            
+            success = redis_service.set(key, chunk_data, ttl=Config.CACHE_TTL)
             
             if not success:
                 logger.warning(f"Failed to store chunk in Redis: {key}")
+        
+        # Store processing metadata separately
+        if metadata and chunks:
+            metadata_key = f"doc_metadata:{chunks[0].source_url}"
+            metadata_summary = {
+                'url': metadata.get('url'),
+                'method': metadata.get('method', 'static'),
+                'has_dynamic_content': bool(metadata.get('dynamic_content')),
+                'api_endpoints': [api['url'] for api in metadata.get('api_data', [])],
+                'processed_timestamp': time.time(),
+                'chunk_count': len(chunks)
+            }
+            redis_service.set(metadata_key, metadata_summary, ttl=Config.CACHE_TTL)
     
     def load_chunks_from_redis(self) -> List[DocumentChunk]:
         """Load existing chunks from Redis"""
@@ -328,26 +419,56 @@ class DocumentProcessor:
         logger.info(f"Loaded {len(loaded_chunks)} chunks from Redis")
         return loaded_chunks
     
-    def process_all_documents(self, urls: List[str] = None) -> None:
-        """Process all configured documents"""
+    async def process_all_documents(self, urls: List[str] = None) -> None:
+        """Process all configured documents with enhanced fetching"""
         urls = urls or Config.DOCUMENT_URLS
         
-        logger.info(f"Processing {len(urls)} documents")
+        logger.info(f"Processing {len(urls)} documents with enhanced fetching")
         start_time = time.time()
         
         # Load existing chunks from Redis
         self.chunks = self.load_chunks_from_redis()
         
-        # Process each URL
+        # Process each URL with enhanced fetching
         for url in urls:
             try:
-                new_chunks = self.process_document(url)
+                new_chunks = await self.process_document(url)
                 logger.info(f"Processed {url}: {len(new_chunks)} new chunks")
             except Exception as e:
                 logger.error(f"Error processing {url}: {e}")
         
         total_time = time.time() - start_time
-        logger.info(f"Document processing completed in {total_time:.2f}s. Total chunks: {len(self.chunks)}")
+        logger.info(f"Enhanced document processing completed in {total_time:.2f}s. Total chunks: {len(self.chunks)}")
+    
+    def process_all_documents_sync(self, urls: List[str] = None) -> None:
+        """Synchronous wrapper for document processing"""
+        import asyncio
+        
+        try:
+            # Try to run in existing event loop
+            loop = asyncio.get_event_loop()
+            if loop.is_running():
+                # Create a new event loop in a thread
+                import concurrent.futures
+                import threading
+                
+                def run_async():
+                    new_loop = asyncio.new_event_loop()
+                    asyncio.set_event_loop(new_loop)
+                    try:
+                        return new_loop.run_until_complete(self.process_all_documents(urls))
+                    finally:
+                        new_loop.close()
+                
+                with concurrent.futures.ThreadPoolExecutor() as executor:
+                    future = executor.submit(run_async)
+                    future.result()
+            else:
+                # Run in current event loop
+                loop.run_until_complete(self.process_all_documents(urls))
+        except RuntimeError:
+            # No event loop, create one
+            asyncio.run(self.process_all_documents(urls))
     
     def get_stats(self) -> Dict[str, Any]:
         """Get document processor statistics"""

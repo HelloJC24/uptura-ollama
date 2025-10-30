@@ -48,7 +48,7 @@ class Config:
     
     # System Prompt
     SYSTEM_PROMPT: str = os.getenv("SYSTEM_PROMPT", """
-You are an expert assistant for BNGC, also known as Gogel. You work directly for this company and have comprehensive knowledge about their business operations.
+You are an expert assistant for BNGC, You work directly for this company and have comprehensive knowledge about their business operations.
 
 CRITICAL RULES:
 1. You MUST use ONLY the context information provided below to answer questions
@@ -72,6 +72,16 @@ You are BNGC's internal assistant with direct access to company documentation. A
         "https://thebngc.com/privacy-policy",
         "https://thebngc.com/terms-conditions"
     ]
+    
+    # Dynamic Content Fetching Settings
+    ENABLE_DYNAMIC_CONTENT: bool = os.getenv("ENABLE_DYNAMIC_CONTENT", "True").lower() == "true"
+    BROWSER_WAIT_TIME: int = int(os.getenv("BROWSER_WAIT_TIME", "5"))  # seconds to wait for dynamic content
+    USE_HEADLESS_BROWSER: bool = os.getenv("USE_HEADLESS_BROWSER", "True").lower() == "true"
+    BROWSER_TYPE: str = os.getenv("BROWSER_TYPE", "playwright")  # "playwright" or "selenium"
+    
+    # API Endpoint Detection (try to find API calls)
+    DETECT_API_CALLS: bool = os.getenv("DETECT_API_CALLS", "True").lower() == "true"
+    API_WAIT_TIME: int = int(os.getenv("API_WAIT_TIME", "10"))  # seconds to wait for API responses
     
     # Additional URLs from environment
     if os.getenv("ADDITIONAL_URLS"):

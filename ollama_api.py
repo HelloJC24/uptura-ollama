@@ -97,7 +97,7 @@ def load_documents():
     logger.info("Starting document processing...")
     try:
         # Process all configured documents
-        document_processor.process_all_documents()
+        document_processor.process_all_documents_sync()
         
         # Initialize RAG retriever with processed chunks
         rag_retriever = RAGRetriever(document_processor.chunks)
@@ -1148,6 +1148,100 @@ Answer briefly using the context:"""
         return jsonify({"error": str(e)}), 500
     return ResponseFormatter.format_error_response("Internal server error", 500)
 
+@app.route("/enhanced-reload", methods=["POST"])
+def enhanced_reload_documents():
+    """Reload documents with enhanced dynamic content fetching"""
+    logger.info("Enhanced document reload requested")
+    
+    try:
+        # Get optional URLs from request
+        data = request.get_json() or {}
+        urls = data.get('urls', Config.DOCUMENT_URLS)
+        
+        if not urls:
+            return ResponseFormatter.format_error_response("No URLs provided", 400)
+        
+        # Check if enhanced processing is enabled
+        if not Config.ENABLE_DYNAMIC_CONTENT:
+            logger.warning("Enhanced processing requested but ENABLE_DYNAMIC_CONTENT is False")
+            return ResponseFormatter.format_error_response(
+                "Enhanced processing is disabled. Set ENABLE_DYNAMIC_CONTENT=true", 400
+            )
+        
+        # Clear existing data
+        document_processor.chunks.clear()
+        document_processor.processed_urls.clear()
+        logger.info("Cleared existing document data")
+        
+        # Process documents with enhanced fetching in background
+        def enhanced_reload():
+            try:
+                logger.info(f"Starting enhanced reload of {len(urls)} documents")
+                start_time = time.time()
+                
+                # Use the async method
+                import asyncio
+                asyncio.run(document_processor.process_all_documents(urls))
+                
+                processing_time = time.time() - start_time
+                logger.info(f"Enhanced document reload completed in {processing_time:.2f}s")
+                
+                # Create new retriever
+                global rag_retriever
+                rag_retriever = RAGRetriever(document_processor.chunks)
+                
+            except Exception as e:
+                logger.error(f"Error in enhanced document reload: {e}")
+        
+        # Start processing in background
+        thread = threading.Thread(target=enhanced_reload, daemon=True)
+        thread.start()
+        
+        return jsonify({
+            "status": "started",
+            "message": "Enhanced document reload started in background",
+            "urls": urls,
+            "dynamic_content_enabled": Config.ENABLE_DYNAMIC_CONTENT,
+            "browser_type": Config.BROWSER_TYPE,
+            "api_detection_enabled": Config.DETECT_API_CALLS
+        }), 202
+        
+    except Exception as e:
+        logger.error(f"Enhanced reload error: {e}")
+        return ResponseFormatter.format_error_response(f"Enhanced reload failed: {str(e)}", 500)
+
+@app.route("/processing-status", methods=["GET"])
+def get_processing_status():
+    """Get current document processing status with enhanced metadata"""
+    try:
+        stats = document_processor.get_stats()
+        
+        # Get enhanced metadata for processed documents
+        enhanced_metadata = {}
+        if redis_service.is_available():
+            for url in document_processor.processed_urls:
+                metadata_key = f"doc_metadata:{url}"
+                metadata = redis_service.get(metadata_key)
+                if metadata:
+                    enhanced_metadata[url] = metadata
+        
+        return jsonify({
+            "status": "success",
+            "basic_stats": stats,
+            "enhanced_metadata": enhanced_metadata,
+            "dynamic_content_config": {
+                "enabled": Config.ENABLE_DYNAMIC_CONTENT,
+                "browser_type": Config.BROWSER_TYPE,
+                "headless": Config.USE_HEADLESS_BROWSER,
+                "wait_time": Config.BROWSER_WAIT_TIME,
+                "api_detection": Config.DETECT_API_CALLS
+            }
+        }), 200
+        
+    except Exception as e:
+        logger.error(f"Processing status error: {e}")
+        return ResponseFormatter.format_error_response(f"Failed to get processing status: {str(e)}", 500)
+
 # Startup initialization
 def initialize_app():
     """Initialize the application"""
@@ -1169,6 +1263,8 @@ def initialize_app():
     logger.info("  GET  /stats - System statistics")
     logger.info("  POST /clear-cache - Clear cache")
     logger.info("  POST /reload-documents - Reload documents")
+    logger.info("  POST /enhanced-reload - Enhanced document reload with dynamic content")
+    logger.info("  GET  /processing-status - Get document processing status with metadata")
     
     if Config.ENABLE_CONVERSATIONS:
         logger.info("  GET  /conversations - List all active conversations")
@@ -1178,6 +1274,16 @@ def initialize_app():
         logger.info(f"  Conversations enabled: max {Config.MAX_CONVERSATION_HISTORY} messages, TTL {Config.CONVERSATION_TTL}s")
     else:
         logger.info("  Conversations are disabled")
+    
+    # Log dynamic content configuration
+    if Config.ENABLE_DYNAMIC_CONTENT:
+        logger.info(f"Enhanced document fetching enabled:")
+        logger.info(f"  Browser type: {Config.BROWSER_TYPE}")
+        logger.info(f"  Headless mode: {Config.USE_HEADLESS_BROWSER}")
+        logger.info(f"  Wait time: {Config.BROWSER_WAIT_TIME}s")
+        logger.info(f"  API detection: {Config.DETECT_API_CALLS}")
+    else:
+        logger.info("Enhanced document fetching is disabled")
 
 if __name__ == "__main__":
     try:
